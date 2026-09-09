@@ -6,9 +6,9 @@
 
 # -- Project information -----------------------------------------------------
 
-project = u"appdeploy"
-copyright = u"2026, Norman"
-author = u"Norman"
+project = "appdeploy"
+copyright = "2026, Norman"
+author = "Norman"
 
 # -- General configuration ---------------------------------------------------
 
