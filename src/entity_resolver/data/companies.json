@@ -1,0 +1,12 @@
+[
+  {"wikidata_id": "Q483551", "canonical_name": "Walmart", "parent_company": null, "headquarters": "Bentonville, Arkansas, United States",
+   "aliases": ["Walmart", "Wal-Mart", "Wal-Mart Stores", "Walmart Inc.", "沃尔玛"]},
+  {"wikidata_id": "Q1036245", "canonical_name": "Shanghai Airlines", "parent_company": "China Eastern Airlines", "headquarters": "Shanghai, China",
+   "aliases": ["Shanghai Airlines", "上海航空", "Shanghai Airlines Co., Ltd."]},
+  {"wikidata_id": "Q312", "canonical_name": "Apple Inc.", "parent_company": null, "headquarters": "Cupertino, California, United States",
+   "aliases": ["Apple", "Apple Inc.", "Apple Computer", "苹果公司"]},
+  {"wikidata_id": "Q1898269", "canonical_name": "Alibaba Group", "parent_company": null, "headquarters": "Hangzhou, China",
+   "aliases": ["Alibaba", "Alibaba Group Holding", "阿里巴巴集团"]},
+  {"wikidata_id": "Q95", "canonical_name": "Google", "parent_company": "Alphabet Inc.", "headquarters": "Mountain View, California, United States",
+   "aliases": ["Google", "Google LLC", "谷歌"]}
+]
