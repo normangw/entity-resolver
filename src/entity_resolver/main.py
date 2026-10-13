@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -32,8 +33,9 @@ async def health() -> HealthResponse:
 async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
     """Resolve a company name to its canonical entity."""
     resolver: Resolver = request.app.state.resolver
-    # Blocking on purpose: Resolver.resolve holds the event loop.
-    match = resolver.resolve(body.company_name)
+    # The model call is blocking, so hand it to a worker thread and keep the
+    # event loop free for other requests (e.g. /health).
+    match = await asyncio.to_thread(resolver.resolve, body.company_name)
     if match is None:
         return ResolveResponse(
             input=body.company_name,
