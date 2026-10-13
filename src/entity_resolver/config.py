@@ -1,5 +1,9 @@
-from pydantic import Field
+from pathlib import Path
+
+from pydantic import Field, FilePath
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DEFAULT_INDEX = Path(__file__).parent / "data" / "companies.json"
 
 
 class Settings(BaseSettings):
@@ -9,6 +13,10 @@ class Settings(BaseSettings):
     app_version: str = Field(default="0.1.0", min_length=1)
     debug: bool = False
     wikidata_timeout: int = Field(default=10, gt=0)
+
+    alias_index_path: FilePath = _DEFAULT_INDEX
+    match_threshold: float = Field(default=0.8, ge=0, le=1)
+    model_delay_seconds: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
     model_config = SettingsConfigDict(
         env_file=".env",
