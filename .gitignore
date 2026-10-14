@@ -146,3 +146,6 @@ dmypy.json
 # Claude context
 CLAUDE.md
 .claude/
+
+# Course reference
+/classmaterial/
