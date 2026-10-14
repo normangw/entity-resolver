@@ -31,6 +31,9 @@ cp .env.example .env
 | `APP_VERSION` | `0.1.0` | Version string |
 | `DEBUG` | `false` | Enable debug mode |
 | `WIKIDATA_TIMEOUT` | `10` | Timeout in seconds for Wikidata requests |
+| `MATCH_THRESHOLD` | `0.8` | Minimum RapidFuzz score, as a fraction, to accept a match |
+| `MODEL_DELAY_SECONDS` | `0` | Seconds `Resolver.resolve` sleeps before scoring. Stands in for a slow model; leave at `0` in normal use |
+| `ALIAS_INDEX_PATH` | bundled `companies.json` | Local alias index loaded once at startup |
 
 ## Running the service
 
@@ -56,7 +59,7 @@ curl http://localhost:8000/health
 ```
 
 ### `POST /resolve`
-Resolve a company name to its canonical entity (placeholder — ML model coming in future assignments).
+Resolve a company name against the local alias index. The model is loaded once at startup. The synchronous score runs in a worker thread (`asyncio.to_thread`) so a slow match does not block `/health`.
 
 ```bash
 curl -X POST http://localhost:8000/resolve \
@@ -67,12 +70,33 @@ curl -X POST http://localhost:8000/resolve \
 ```json
 {
   "input": "Wal-Mart Stores Inc.",
-  "canonical_name": null,
+  "status": "resolved",
+  "wikidata_id": "Q483551",
+  "canonical_name": "Walmart",
   "parent_company": null,
-  "headquarters": null,
-  "confidence": null
+  "headquarters": "Bentonville, Arkansas, United States",
+  "confidence": 1.0
 }
 ```
+
+A name that scores below `MATCH_THRESHOLD` returns `"status": "unresolved"` and null company fields. `language` is validated on the request. Matching uses the alias strings in the index, including non-English aliases such as `上海航空`.
+
+## Concurrency audit
+
+`discussion.md` records one request's steps and the ten-request measurement. To reproduce it, run the blocking tag and this branch separately. In one terminal:
+
+```bash
+git checkout blocking-resolve
+MODEL_DELAY_SECONDS=1 uv run uvicorn entity_resolver.main:app --host 127.0.0.1 --port 8000
+```
+
+In another:
+
+```bash
+uv run python scripts/bench.py http://127.0.0.1:8000 10
+```
+
+Stop the server, then repeat on this branch (`git checkout 5-fix-blocking-call`). `MODEL_DELAY_SECONDS` must be set before the process starts. The bench script sends ten `POST /resolve` calls at once with `httpx.AsyncClient` and `asyncio.gather` and prints the wall-clock time and the slowest request.
 
 ## Running tests
 
