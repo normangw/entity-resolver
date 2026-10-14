@@ -7,8 +7,9 @@
 # Weights / artifact: the "model artifact" is the alias index
 #   src/entity_resolver/data/companies.json. It is a few KB and versioned with the
 #   code, so it is baked into the image. compose.yml copies it into the named
-#   volume `alias-index` on first start; pointing ALIAS_INDEX_PATH at another file
-#   in .env swaps the index with a restart, no rebuild.
+#   volume `alias-index` on first start. compose.yml sets ALIAS_INDEX_PATH under
+#   `environment`, which overrides .env, and the volume keeps the first-start
+#   file, so changing companies.json needs `docker compose down -v` and a rebuild.
 # Dependencies: none yet (no database, vector store or cache), so compose.yml
 #   runs this one service.
 
