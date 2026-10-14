@@ -9,6 +9,14 @@ from entity_resolver.main import app
 from entity_resolver.resolver import Entity, Match, Resolver
 
 
+def wait_ready(client: TestClient, timeout: float = 5.0) -> None:
+    """Block until the background model load has finished."""
+    deadline = time.monotonic() + timeout
+    while client.get("/ready").status_code != 200:
+        assert time.monotonic() < deadline, "model did not finish loading"
+        time.sleep(0.01)
+
+
 def test_health_returns_ok():
     """Health endpoint should return status ok and a version string."""
     with TestClient(app) as client:
@@ -17,6 +25,32 @@ def test_health_returns_ok():
     data = response.json()
     assert data["status"] == "ok"
     assert "version" in data
+
+
+def test_ready_after_startup():
+    """/ready returns 200 once the lifespan has loaded the resolver."""
+    with TestClient(app) as client:
+        wait_ready(client)
+        response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+
+
+def test_not_ready_before_startup():
+    """/ready returns 503 while the resolver has not been loaded."""
+    # No `with`: the lifespan does not run, so app.state has no resolver.
+    client = TestClient(app)
+    had_resolver = hasattr(app.state, "resolver")
+    saved = getattr(app.state, "resolver", None)
+    if had_resolver:
+        del app.state.resolver
+    try:
+        response = client.get("/ready")
+    finally:
+        if had_resolver:
+            app.state.resolver = saved
+    assert response.status_code == 503
+    assert response.json() == {"status": "not ready"}
 
 
 def test_settings_rejects_bad_timeout():
@@ -34,6 +68,7 @@ def test_settings_rejects_bad_timeout():
 
 def test_resolve_known_company():
     with TestClient(app) as client:
+        wait_ready(client)
         r = client.post("/resolve", json={"company_name": "Wal-Mart Stores Inc."})
     assert r.status_code == 200
     data = r.json()
@@ -44,12 +79,14 @@ def test_resolve_known_company():
 
 def test_resolve_non_english_alias():
     with TestClient(app) as client:
+        wait_ready(client)
         r = client.post("/resolve", json={"company_name": "上海航空", "language": "zh"})
     assert r.json()["canonical_name"] == "Shanghai Airlines"
 
 
 def test_resolve_unknown_company_is_unresolved():
     with TestClient(app) as client:
+        wait_ready(client)
         r = client.post("/resolve", json={"company_name": "Zyxwv Quantum Bakery"})
     assert r.json()["status"] == "unresolved"
 
@@ -76,6 +113,7 @@ def test_resolve_uses_stubbed_model(monkeypatch):
 
     monkeypatch.setattr(Resolver, "resolve", fake_resolve)
     with TestClient(app) as client:
+        wait_ready(client)
         response = client.post("/resolve", json={"company_name": "not in the index"})
     assert response.status_code == 200
     data = response.json()
@@ -117,3 +155,25 @@ def test_health_answers_during_slow_resolve(monkeypatch):
             assert done.status_code == 200
 
     asyncio.run(run())
+
+
+def test_requests_during_loading(monkeypatch):
+    """/health is 200 while loading; /ready and /resolve are 503 until done."""
+    release = threading.Event()
+    real_init = Resolver.__init__
+
+    def slow_init(self: Resolver, *args, **kwargs) -> None:
+        assert release.wait(5)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(Resolver, "__init__", slow_init)
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/ready").status_code == 503
+        r = client.post("/resolve", json={"company_name": "Walmart"})
+        assert r.status_code == 503
+        release.set()
+        wait_ready(client)
+        r = client.post("/resolve", json={"company_name": "Walmart"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "resolved"

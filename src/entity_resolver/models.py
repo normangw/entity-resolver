@@ -8,6 +8,12 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class ReadyResponse(BaseModel):
+    """Response model for the /ready endpoint."""
+
+    status: str  # "ready" | "not ready"
+
+
 class ResolveRequest(BaseModel):
     """Request model for company entity resolution."""
 

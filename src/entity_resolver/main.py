@@ -1,23 +1,53 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request, Response, status
 
 from entity_resolver.config import settings
-from entity_resolver.models import HealthResponse, ResolveRequest, ResolveResponse
+from entity_resolver.models import (
+    HealthResponse,
+    ReadyResponse,
+    ResolveRequest,
+    ResolveResponse,
+)
 from entity_resolver.resolver import Resolver
 
+logger = logging.getLogger(__name__)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Load the model once at startup; every request reuses it."""
-    app.state.resolver = Resolver(
+
+def _load_resolver() -> Resolver:
+    return Resolver(
         settings.alias_index_path,
         threshold=settings.match_threshold,
         delay_seconds=settings.model_delay_seconds,
     )
-    yield
+
+
+async def _load_into(app: FastAPI) -> None:
+    """Load the model off the event loop, then mark the service ready."""
+    try:
+        app.state.resolver = await asyncio.to_thread(_load_resolver)
+    except Exception:
+        # Stay alive but not ready, so /health shows the process is up
+        # and /ready and /resolve keep returning 503.
+        logger.exception("Failed to load the alias index")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Start serving at once and load the model in the background.
+
+    /health answers as soon as the process is up; /ready and /resolve return
+    503 until the load finishes.
+    """
+    app.state.resolver = None
+    load_task = asyncio.create_task(_load_into(app))
+    try:
+        yield
+    finally:
+        load_task.cancel()
 
 
 app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
@@ -29,10 +59,24 @@ async def health() -> HealthResponse:
     return HealthResponse(status="ok", version=settings.app_version)
 
 
+@app.get("/ready", response_model=ReadyResponse)
+async def ready(request: Request, response: Response) -> ReadyResponse:
+    """Report whether the alias index has finished loading at startup."""
+    if getattr(request.app.state, "resolver", None) is None:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return ReadyResponse(status="not ready")
+    return ReadyResponse(status="ready")
+
+
 @app.post("/resolve", response_model=ResolveResponse)
 async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
     """Resolve a company name to its canonical entity."""
-    resolver: Resolver = request.app.state.resolver
+    resolver: Resolver | None = request.app.state.resolver
+    if resolver is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model is still loading",
+        )
     # The model call is blocking, so hand it to a worker thread and keep the
     # event loop free for other requests (e.g. /health).
     match = await asyncio.to_thread(resolver.resolve, body.company_name)
