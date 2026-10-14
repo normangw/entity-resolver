@@ -1,0 +1,31 @@
+# Never ship local environments, history or real settings in the image.
+.venv/
+.git/
+.gitignore
+.env
+.env.*
+!.env.example
+
+# Caches and build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Not needed at run time
+.github/
+.claude/
+docs/
+tests/
+scripts/
+.pre-commit-config.yaml
+.readthedocs.yml
+CHANGELOG.md
+discussion.md
+Dockerfile
+compose.yml
+.DS_Store
