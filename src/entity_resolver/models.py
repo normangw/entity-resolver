@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 
 class HealthResponse(BaseModel):
@@ -11,14 +11,23 @@ class HealthResponse(BaseModel):
 class ResolveRequest(BaseModel):
     """Request model for company entity resolution."""
 
-    company_name: str
-    language: str = "en"
+    company_name: str = Field(min_length=1, max_length=200)
+    language: str = Field(default="en", pattern=r"^[a-z]{2}$")
+
+    @field_validator("company_name")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("company_name must not be blank")
+        return v.strip()
 
 
 class ResolveResponse(BaseModel):
     """Response model for company entity resolution."""
 
     input: str
+    status: str  # "resolved" | "unresolved"
+    wikidata_id: str | None
     canonical_name: str | None
     parent_company: str | None
     headquarters: str | None

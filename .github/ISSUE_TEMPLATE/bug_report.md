@@ -16,7 +16,7 @@ e.g. `/health`, `/resolve`
 **To Reproduce**
 Steps to reproduce the behavior, ideally a copy-pasteable request:
 ```
-curl -X POST http://localhost:8000/... -H "Content-Type: application/json" -d '{"name": "..."}'
+curl -X POST http://localhost:8000/resolve -H "Content-Type: application/json" -d '{"company_name": "..."}'
 ```
 
 **Input**
