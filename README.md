@@ -128,7 +128,7 @@ Interactive docs: `http://$HOST:8000/docs`
 Measured on the team's Jetstream2 instance with these commands:
 
 ```bash
-docker image inspect entity-resolver:latest --format '{{.Size}}'      # image size (bytes)
+docker image ls entity-resolver                                      # image size on disk
 echo "# touch" >> src/entity_resolver/main.py
 time docker compose build                                            # rebuild, dependency layer cached
 time docker compose build --no-cache                                 # rebuild, nothing cached
@@ -138,15 +138,21 @@ docker system df                                                     # with the 
 
 | Measurement | Result |
 |---|---|
-| Image size on disk | _fill in_ |
-| Rebuild after a one-line code change, dependency layer cached | _fill in_ |
-| Rebuild after a one-line code change, `--no-cache` | _fill in_ |
+| Image size on disk | 322 MB (79.9 MB content size) |
+| Rebuild after a one-line code change, dependency layer cached | 3.5 s |
+| Rebuild after a one-line code change, `--no-cache` | 9.3 s |
 
 `docker system df` with the stack up:
 
 ```
-(paste output here)
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          5         5         2.257GB   2.257GB (100%)
+Containers      5         4         27.18MB   12.29kB (0%)
+Local Volumes   2         2         270.8MB   0B (0%)
+Build Cache     40        0         691.5MB   369.1MB
 ```
+
+With the dependency layer cached, only `COPY src` and the final `uv sync` re-run after a one-line code change; the base image, `uv`, and the dependency install steps are all `CACHED`. `--no-cache` re-runs every step, but still reuses the already-pulled base images. The stack came back by itself after shelving and unshelving the instance (`restart: unless-stopped`), and `/health` answered again.
 
 ## API Endpoints
 
