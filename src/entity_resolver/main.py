@@ -2,10 +2,15 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response, status
 
 from entity_resolver.config import settings
-from entity_resolver.models import HealthResponse, ResolveRequest, ResolveResponse
+from entity_resolver.models import (
+    HealthResponse,
+    ReadyResponse,
+    ResolveRequest,
+    ResolveResponse,
+)
 from entity_resolver.resolver import Resolver
 
 
@@ -27,6 +32,15 @@ app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=li
 async def health() -> HealthResponse:
     """Check that the service is running."""
     return HealthResponse(status="ok", version=settings.app_version)
+
+
+@app.get("/ready", response_model=ReadyResponse)
+async def ready(request: Request, response: Response) -> ReadyResponse:
+    """Report whether the alias index has finished loading at startup."""
+    if getattr(request.app.state, "resolver", None) is None:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return ReadyResponse(status="not ready")
+    return ReadyResponse(status="ready")
 
 
 @app.post("/resolve", response_model=ResolveResponse)

@@ -19,6 +19,31 @@ def test_health_returns_ok():
     assert "version" in data
 
 
+def test_ready_after_startup():
+    """/ready returns 200 once the lifespan has loaded the resolver."""
+    with TestClient(app) as client:
+        response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+
+
+def test_not_ready_before_startup():
+    """/ready returns 503 while the resolver has not been loaded."""
+    # No `with`: the lifespan does not run, so app.state has no resolver.
+    client = TestClient(app)
+    had_resolver = hasattr(app.state, "resolver")
+    saved = getattr(app.state, "resolver", None)
+    if had_resolver:
+        del app.state.resolver
+    try:
+        response = client.get("/ready")
+    finally:
+        if had_resolver:
+            app.state.resolver = saved
+    assert response.status_code == 503
+    assert response.json() == {"status": "not ready"}
+
+
 def test_settings_rejects_bad_timeout():
     """Settings should reject a non-integer wikidata_timeout."""
     from pydantic import ValidationError
