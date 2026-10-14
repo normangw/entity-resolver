@@ -103,6 +103,10 @@ Set `HOST` to `localhost` on your machine, or to the instance's public IP.
 curl http://$HOST:8000/health
 # {"status":"ok","version":"0.1.0"}
 
+# Readiness check (503 {"status":"not ready"} until the alias index has loaded)
+curl -i http://$HOST:8000/ready
+# {"status":"ready"}
+
 # Resolve a name in English
 curl -X POST http://$HOST:8000/resolve \
   -H "Content-Type: application/json" \
@@ -170,8 +174,21 @@ curl http://localhost:8000/health
 {"status": "ok", "version": "0.1.0"}
 ```
 
+### `GET /ready`
+Check that the alias index has finished loading. The model loads in the background after startup, so `/health` answers as soon as the process is up, while `/ready` and `/resolve` return `503` until loading completes.
+
+```bash
+curl -i http://localhost:8000/ready
+```
+
+```json
+{"status": "ready"}
+```
+
+Before the load finishes (or if it fails) the response is `503` with `{"status": "not ready"}`.
+
 ### `POST /resolve`
-Resolve a company name against the local alias index. The model is loaded once at startup. The synchronous score runs in a worker thread (`asyncio.to_thread`) so a slow match does not block `/health`.
+Resolve a company name against the local alias index. The model is loaded once at startup, in the background; until it is ready this returns `503`. The synchronous score runs in a worker thread (`asyncio.to_thread`) so a slow match does not block `/health`.
 
 ```bash
 curl -X POST http://localhost:8000/resolve \
