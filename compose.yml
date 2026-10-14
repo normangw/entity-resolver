@@ -1,0 +1,27 @@
+# Entity Resolver stack.
+# One service: the API. It has no dependencies yet (no database, vector store or
+# cache), so there is nothing else to start and no dependency health condition.
+# Start everything on a fresh clone with:  docker compose up -d
+
+services:
+  api:
+    build: .
+    image: entity-resolver:latest
+    # Settings come in at run time, never baked into the image.
+    # .env is optional: without it the defaults in config.py apply.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # The alias index lives in the named volume so it survives the container.
+      ALIAS_INDEX_PATH: /app/src/entity_resolver/data/companies.json
+    ports:
+      - "8000:8000"
+    volumes:
+      - alias-index:/app/src/entity_resolver/data
+    restart: unless-stopped
+
+volumes:
+  # Seeded from the image on first start. After changing companies.json in the
+  # repo, run `docker compose down -v && docker compose up -d --build` to reseed.
+  alias-index:
