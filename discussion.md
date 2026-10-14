@@ -47,7 +47,7 @@ The "model" is a RapidFuzz scorer (`fuzz.WRatio`) over a small alias index (`com
 | Time to answer one `POST /resolve` (median of 20, `curl` on the instance) | 1.3 ms |
 | Container memory with the index loaded (`docker stats`) | 39.75 MiB |
 
-The latency was measured with `curl` from the instance itself, so it excludes the network between a client and the instance. The `MODEL_DELAY_SECONDS` stand-in from the blocking-call audit above was off (`0`).
+The latency is end-to-end endpoint latency (request parsing, scoring and response), not scorer-only runtime. It was measured with `curl` from the instance itself, so it excludes the network between a client and the instance. The `MODEL_DELAY_SECONDS` stand-in from the blocking-call audit above was off (`0`).
 
 ## Why this placement
 
@@ -56,8 +56,8 @@ Scoring a name takes about 1.3 ms, so a network hop to a separate model service 
 ## What it costs
 
 - The model shares the API's CPU. A heavier scorer would compete with request handling, so `Resolver.resolve` runs in a worker thread (`asyncio.to_thread`) to keep `/health` responsive; see the blocking-call audit above.
-- The alias index is baked into the image. Changing it needs a restart (`ALIAS_INDEX_PATH` in `.env`), not a rebuild, but scaling the API means scaling the model with it.
+- The alias index is baked into the image. Changing `companies.json` needs `docker compose down -v` and a rebuild: `compose.yml` sets `ALIAS_INDEX_PATH` under `environment`, which overrides `.env`, and the `alias-index` volume keeps the file from the first start. Scaling the API means scaling the model with it.
 
 ## Moving the model later
 
-Nothing in the endpoint code depends on where the model runs, and `ALIAS_INDEX_PATH` already comes from configuration. If the scorer is replaced by a heavier model, the resolver can become a client whose address is read from settings, so moving the model becomes a configuration change.
+Nothing in the endpoint code depends on where the model runs, and `ALIAS_INDEX_PATH` already comes from configuration. If the scorer is replaced by a heavier model, the resolver can become a client whose address is read from settings, but that client and its URL settings do not exist yet. They would have to be implemented first, and only then would moving the model be a configuration change.
