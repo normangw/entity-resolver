@@ -79,7 +79,7 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
         )
     # The model call is blocking, so hand it to a worker thread and keep the
     # event loop free for other requests (e.g. /health).
-    match = await asyncio.to_thread(resolver.resolve, body.company_name)
+    match = await asyncio.to_thread(resolver.resolve, body.company_name, body.region)
     if match is None:
         return ResolveResponse(
             input=body.company_name,
@@ -88,6 +88,7 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
             canonical_name=None,
             parent_company=None,
             headquarters=None,
+            country=None,
             confidence=None,
         )
     e = match.entity
@@ -98,5 +99,6 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
         canonical_name=e.canonical_name,
         parent_company=e.parent_company,
         headquarters=e.headquarters,
+        country=e.country,
         confidence=match.score,
     )

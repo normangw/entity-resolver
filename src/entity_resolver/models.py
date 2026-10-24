@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -19,6 +21,7 @@ class ResolveRequest(BaseModel):
 
     company_name: str = Field(min_length=1, max_length=200)
     language: str = Field(default="en", pattern=r"^[a-z]{2}$")
+    region: Literal["world", "us", "cn", "gb", "jp", "eu"] = "world"
 
     @field_validator("company_name")
     @classmethod
@@ -37,4 +40,5 @@ class ResolveResponse(BaseModel):
     canonical_name: str | None
     parent_company: str | None
     headquarters: str | None
+    country: str | None = None
     confidence: float | None

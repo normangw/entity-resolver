@@ -176,7 +176,7 @@ Resolve a company name against the local alias index. The model is loaded once a
 ```bash
 curl -X POST http://localhost:8000/resolve \
   -H "Content-Type: application/json" \
-  -d '{"company_name": "Wal-Mart Stores Inc.", "language": "en"}'
+  -d '{"company_name": "Wal-Mart Stores Inc.", "language": "en", "region": "world"}'
 ```
 
 ```json
@@ -187,9 +187,14 @@ curl -X POST http://localhost:8000/resolve \
   "canonical_name": "Walmart",
   "parent_company": null,
   "headquarters": "Bentonville, Arkansas, United States",
+  "country": "US",
   "confidence": 1.0
 }
 ```
+
+`region` is optional and defaults to `world`. It limits matching to companies headquartered in that region: `world`, `us`, `cn`, `gb`, `jp` or `eu`. A company outside the chosen region comes back `unresolved`. Each record in the index carries an ISO `country` code that the filter uses.
+
+Names are normalized before scoring, the same way for the query and for every alias: Unicode NFKC, accent folding (`Nestlé` to `nestle`), lowercasing, `&` to `and`, leading "the", legal suffixes (`Inc`, `GmbH`, `AG`, `S.A.`, `有限公司`, `株式会社` and others) and punctuation removed. If that would leave nothing, the unstripped name is used.
 
 A name that scores below `MATCH_THRESHOLD` returns `"status": "unresolved"` and null company fields. `language` is validated on the request. Matching uses the alias strings in the index, including non-English aliases such as `上海航空`.
 
