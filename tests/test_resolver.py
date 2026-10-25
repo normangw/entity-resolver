@@ -109,7 +109,7 @@ def test_candidates_are_distinct_companies_best_first(tmp_path):
 
 
 def test_scorer_is_configurable(tmp_path):
-    """WRatio accepts a short unrelated name via partial matching; ratio does not."""
+    """WRatio accepts a name that merely contains a short alias; ratio does not."""
     from rapidfuzz import fuzz
 
     path = tmp_path / "index.json"
@@ -121,7 +121,7 @@ def test_scorer_is_configurable(tmp_path):
                     "canonical_name": "CyberAgent",
                     "parent_company": None,
                     "headquarters": None,
-                    "aliases": ["CyberAgent"],
+                    "aliases": ["CyberAgent", "CA"],
                 }
             ]
         ),
