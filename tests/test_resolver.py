@@ -106,3 +106,26 @@ def test_candidates_are_distinct_companies_best_first(tmp_path):
         resolver.candidates("Delta", region="us", min_score=0.5)[0].entity.country
         == "US"
     )
+
+
+def test_scorer_is_configurable(tmp_path):
+    """WRatio accepts a short unrelated name via partial matching; ratio does not."""
+    from rapidfuzz import fuzz
+
+    path = tmp_path / "index.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "wikidata_id": "Q9",
+                    "canonical_name": "CyberAgent",
+                    "parent_company": None,
+                    "headquarters": None,
+                    "aliases": ["CyberAgent"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    assert Resolver(path).resolve("Cargill") is not None  # default WRatio
+    assert Resolver(path, scorer=fuzz.ratio).resolve("Cargill") is None
