@@ -95,3 +95,14 @@ def test_bundled_index_has_countries():
     match = Resolver(INDEX).resolve("Shanghai Airlines", region="cn")
     assert match is not None
     assert match.entity.country == "CN"
+
+
+def test_candidates_are_distinct_companies_best_first(tmp_path):
+    resolver = Resolver(write_index(tmp_path))
+    found = resolver.candidates("Delta", min_score=0.5)
+    assert [m.entity.wikidata_id for m in found] == ["Q1", "Q2"]  # one per company
+    assert found[0].score >= found[1].score
+    assert (
+        resolver.candidates("Delta", region="us", min_score=0.5)[0].entity.country
+        == "US"
+    )
