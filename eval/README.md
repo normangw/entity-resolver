@@ -41,5 +41,20 @@ query on an index this size ("Cargill" matches "CyberAgent", "Koch Industries"
 matches "S.T. Corp"), so no threshold below 0.95 rejects anything. Plain `ratio`
 separates the cases. Full output: run the commands above.
 
+## Decision and known limitation
+
+**Decision:** the default scorer stays `WRatio` at a 0.80 threshold. It has the highest
+accuracy on the set (95.8%) and loses nothing to a missed match (0.0% missed), which
+matters for the main use, cleaning a list of real company names. Plain `ratio` at 0.85
+is the documented alternative; switching is the `scorer=` argument of `Resolver` and
+`MATCH_THRESHOLD`.
+
+**Limitation:** `WRatio` at 0.80 correctly leaves only 9.4% of unlisted names
+unresolved, so a private company or gibberish name usually comes back as a wrong match
+with a confident score. The tiebreak verifier does not help here, because it only runs
+on low-confidence results and these are not low-confidence. Plain `ratio` at 0.85
+rejects 87.5% of them at the cost of 4.9% missed matches. The `not_listed` set is
+small (32 names), so these percentages are rough.
+
 Preprocessing ablation (`ratio` at 0.85): full 94.4%, no suffix stripping 90.3%,
 lowercase only 88.2%. Accent folding changes nothing on this set.
