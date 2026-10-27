@@ -79,6 +79,7 @@ class Entity:
     parent_company: str | None
     headquarters: str | None
     country: str | None = None  # ISO 3166-1 alpha-2, e.g. "US"
+    identifier: str | None = None  # "ticker:exchange", the Capital IQ lookup key
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ class Resolver:
                 parent_company=rec.get("parent_company"),
                 headquarters=rec.get("headquarters"),
                 country=rec.get("country"),
+                identifier=rec.get("identifier"),
             )
             for alias in rec["aliases"]:
                 self._choices.append(normalize(alias))
@@ -140,3 +142,27 @@ class Resolver:
         if score / 100 < self._threshold:
             return None
         return Match(entity=self._owners[idx], score=round(score / 100, 3))
+
+    def candidates(
+        self, name: str, region: str = "world", min_score: float = 0.0, limit: int = 3
+    ) -> list[Match]:
+        """Closest distinct companies scoring at least ``min_score``, best first."""
+        rows = self._region_rows[region]
+        found = process.extract(
+            normalize(name),
+            {i: self._choices[i] for i in rows},
+            scorer=fuzz.WRatio,
+            limit=None,
+            score_cutoff=min_score * 100,
+        )
+        out: list[Match] = []
+        seen: set[str] = set()
+        for _, score, idx in found:
+            entity = self._owners[idx]
+            if entity.wikidata_id in seen:
+                continue
+            seen.add(entity.wikidata_id)
+            out.append(Match(entity=entity, score=round(score / 100, 3)))
+            if len(out) == limit:
+                break
+        return out

@@ -198,3 +198,79 @@ def test_resolve_rejects_unknown_region():
     with TestClient(app) as client:
         r = client.post("/resolve", json={"company_name": "Apple", "region": "mars"})
     assert r.status_code == 422
+
+
+def _walmart_candidate() -> Match:
+    return Match(
+        entity=Entity(
+            wikidata_id="Q483551",
+            canonical_name="Walmart",
+            parent_company=None,
+            headquarters="Bentonville, Arkansas, United States",
+            country="US",
+            identifier="WMT:NYSE",
+        ),
+        score=0.65,
+    )
+
+
+def _force_low_confidence(monkeypatch) -> None:
+    monkeypatch.setattr(Resolver, "resolve", lambda self, name, region="world": None)
+    monkeypatch.setattr(
+        Resolver,
+        "candidates",
+        lambda self, name, region="world", min_score=0.0, limit=3: [
+            _walmart_candidate()
+        ],
+    )
+
+
+def test_low_confidence_is_settled_by_capiq(monkeypatch):
+    """With the tiebreak on, a candidate whose official name fits is accepted."""
+    from entity_resolver.config import settings
+
+    _force_low_confidence(monkeypatch)
+    monkeypatch.setattr(settings, "capiq_enabled", True)
+    with TestClient(app) as client:
+        wait_ready(client)
+        data = client.post("/resolve", json={"company_name": "Walmart Inc"}).json()
+    assert data["status"] == "resolved"
+    assert data["source"] == "capiq"
+    assert "Bentonville" in data["headquarters"]
+    assert "702 Southwest" in data["headquarters"]  # Capital IQ's address
+
+
+def test_low_confidence_stays_unresolved_when_capiq_is_off(monkeypatch):
+    from entity_resolver.config import settings
+
+    _force_low_confidence(monkeypatch)
+    monkeypatch.setattr(settings, "capiq_enabled", False)
+    with TestClient(app) as client:
+        wait_ready(client)
+        data = client.post("/resolve", json={"company_name": "Walmart Inc"}).json()
+    assert data["status"] == "unresolved"
+    assert data["source"] is None
+
+
+def test_capiq_failure_falls_back_to_unresolved(monkeypatch):
+    from entity_resolver import main
+    from entity_resolver.config import settings
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("capiq down")
+
+    _force_low_confidence(monkeypatch)
+    monkeypatch.setattr(settings, "capiq_enabled", True)
+    monkeypatch.setattr(main, "tiebreak", boom)
+    with TestClient(app) as client:
+        wait_ready(client)
+        r = client.post("/resolve", json={"company_name": "Walmart Inc"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "unresolved"
+
+
+def test_local_match_reports_local_source():
+    with TestClient(app) as client:
+        wait_ready(client)
+        data = client.post("/resolve", json={"company_name": "Apple Inc."}).json()
+    assert data["source"] == "local"

@@ -33,6 +33,10 @@ cp .env.example .env
 | `WIKIDATA_TIMEOUT` | `10` | Timeout in seconds for Wikidata requests |
 | `MATCH_THRESHOLD` | `0.8` | Minimum RapidFuzz score, as a fraction, to accept a match |
 | `MODEL_DELAY_SECONDS` | `0` | Seconds `Resolver.resolve` sleeps before scoring. Stands in for a slow model; leave at `0` in normal use |
+| `CAPIQ_ENABLED` | `false` | Turn on the Capital IQ tiebreak for low-confidence matches. Only a mock client exists, so it never makes a network call |
+| `CAPIQ_LOW_THRESHOLD` | `0.6` | Lowest score a candidate may have to be sent to the tiebreak |
+| `CAPIQ_DAILY_BUDGET` | `1000` | Capital IQ requests allowed per day (the trial plan allows 24,000) |
+| `CAPIQ_TIMEOUT` | `5` | Seconds to wait for Capital IQ before giving up |
 | `ALIAS_INDEX_PATH` | bundled `companies.json` | Local alias index loaded once at startup |
 
 ## Running the service
@@ -196,7 +200,11 @@ curl -X POST http://localhost:8000/resolve \
 
 Names are normalized before scoring, the same way for the query and for every alias: Unicode NFKC, accent folding (`Nestlé` to `nestle`), lowercasing, `&` to `and`, leading "the", legal suffixes (`Inc`, `GmbH`, `AG`, `S.A.`, `有限公司`, `株式会社` and others) and punctuation removed. If that would leave nothing, the unstripped name is used.
 
-A name that scores below `MATCH_THRESHOLD` returns `"status": "unresolved"` and null company fields. `language` is validated on the request. Matching uses the alias strings in the index, including non-English aliases such as `上海航空`.
+`source` says where the answer came from: `local` (the alias index) or `capiq` (settled by the Capital IQ tiebreak).
+
+**Capital IQ tiebreak (mock).** When `CAPIQ_ENABLED=true` and the best local score is below `MATCH_THRESHOLD`, candidates scoring at least `CAPIQ_LOW_THRESHOLD` that have an `identifier` (`ticker:exchange`) are sent to Capital IQ in one batched call. The Company Intelligence API (`POST /v3/clientservice.json`) looks companies up by identifier and cannot search by name, so it confirms candidates the index proposed instead of finding new ones. The candidate whose official Capital IQ name best matches the query wins if it scores at least `MATCH_THRESHOLD`, and the response uses Capital IQ's address. A timeout, an error or a spent daily budget leaves the result `unresolved`. The mock builds the real request body and parses the documented response shape (`src/entity_resolver/capiq.py`), so a real HTTP client can replace it.
+
+A name that scores below `MATCH_THRESHOLD` (and is not settled by the tiebreak) returns `"status": "unresolved"` and null company fields. `language` is validated on the request. Matching uses the alias strings in the index, including non-English aliases such as `上海航空`.
 
 ## Concurrency audit
 

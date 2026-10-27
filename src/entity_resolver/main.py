@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 
+from entity_resolver.capiq import CapIQBudget, MockCapIQClient, Verified, tiebreak
 from entity_resolver.config import settings
 from entity_resolver.models import (
     HealthResponse,
@@ -43,6 +44,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     503 until the load finishes.
     """
     app.state.resolver = None
+    app.state.capiq = MockCapIQClient() if settings.capiq_enabled else None
+    app.state.capiq_budget = CapIQBudget(settings.capiq_daily_budget)
     load_task = asyncio.create_task(_load_into(app))
     try:
         yield
@@ -68,6 +71,34 @@ async def ready(request: Request, response: Response) -> ReadyResponse:
     return ReadyResponse(status="ready")
 
 
+async def _escalate(request: Request, resolver: Resolver, body: ResolveRequest):
+    """Ask Capital IQ to settle a low-confidence match; None if it cannot."""
+    client = request.app.state.capiq
+    if client is None:
+        return None
+    candidates = await asyncio.to_thread(
+        resolver.candidates,
+        body.company_name,
+        body.region,
+        settings.capiq_low_threshold,
+    )
+    try:
+        return await asyncio.wait_for(
+            tiebreak(
+                body.company_name,
+                candidates,
+                client,
+                settings.match_threshold,
+                request.app.state.capiq_budget,
+            ),
+            timeout=settings.capiq_timeout,
+        )
+    except Exception:
+        # An unavailable second opinion must not fail the request.
+        logger.exception("Capital IQ tiebreak failed")
+        return None
+
+
 @app.post("/resolve", response_model=ResolveResponse)
 async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
     """Resolve a company name to its canonical entity."""
@@ -81,6 +112,20 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
     # event loop free for other requests (e.g. /health).
     match = await asyncio.to_thread(resolver.resolve, body.company_name, body.region)
     if match is None:
+        verified: Verified | None = await _escalate(request, resolver, body)
+        if verified is not None:
+            e = verified.match.entity
+            return ResolveResponse(
+                input=body.company_name,
+                status="resolved",
+                wikidata_id=e.wikidata_id,
+                canonical_name=e.canonical_name,
+                parent_company=e.parent_company,
+                headquarters=verified.company.address or e.headquarters,
+                country=e.country,
+                source="capiq",
+                confidence=verified.match.score,
+            )
         return ResolveResponse(
             input=body.company_name,
             status="unresolved",
@@ -100,5 +145,6 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
         parent_company=e.parent_company,
         headquarters=e.headquarters,
         country=e.country,
+        source="local",
         confidence=match.score,
     )
