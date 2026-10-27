@@ -33,6 +33,10 @@ cp .env.example .env
 | `WIKIDATA_TIMEOUT` | `10` | Timeout in seconds for Wikidata requests |
 | `MATCH_THRESHOLD` | `0.8` | Minimum RapidFuzz score, as a fraction, to accept a match |
 | `MODEL_DELAY_SECONDS` | `0` | Seconds `Resolver.resolve` sleeps before scoring. Stands in for a slow model; leave at `0` in normal use |
+| `GLEIF_ENABLED` | `false` | Turn on the GLEIF tiebreak for low-confidence matches. When on, the service calls the public GLEIF API |
+| `GLEIF_LOW_THRESHOLD` | `0.6` | Lowest score a candidate may have to be sent to the tiebreak |
+| `GLEIF_DAILY_BUDGET` | `1000` | GLEIF requests allowed per day. GLEIF is free but shared, so this is a courtesy cap |
+| `GLEIF_TIMEOUT` | `5` | Seconds to wait for GLEIF before giving up |
 | `ALIAS_INDEX_PATH` | bundled `companies.json` | Local alias index loaded once at startup |
 
 ## Running the service
@@ -239,7 +243,11 @@ curl -X POST http://localhost:8000/resolve \
 
 Names are normalized before scoring, the same way for the query and for every alias: Unicode NFKC, accent folding (`Nestlé` to `nestle`), lowercasing, `&` to `and`, leading "the", legal suffixes (`Inc`, `GmbH`, `AG`, `S.A.`, `有限公司`, `株式会社` and others) and punctuation removed. If that would leave nothing, the unstripped name is used.
 
-A name that scores below `MATCH_THRESHOLD` returns `"status": "unresolved"` and null company fields. `language` is validated on the request. Matching uses the alias strings in the index, including non-English aliases such as `上海航空`.
+`source` says where the answer came from: `local` (the alias index) or `gleif` (settled by the GLEIF tiebreak).
+
+**GLEIF tiebreak.** When `GLEIF_ENABLED=true` and the best local score is below `MATCH_THRESHOLD`, candidates scoring at least `GLEIF_LOW_THRESHOLD` that have an `identifier` (the company's Legal Entity Identifier, LEI) are sent to the public GLEIF API in one request (`GET /lei-records?filter[lei]=...`). GLEIF's name search cannot handle messy input, but lookup by LEI is exact, so it confirms candidates the index proposed instead of finding new ones. The candidate whose GLEIF legal name best matches the query wins if it scores at least `MATCH_THRESHOLD`. Name, country and headquarters in the response still come from Wikidata, because GLEIF's address is often a registered agent's. A timeout, an error or a spent daily budget leaves the result `unresolved`. Only companies that have an LEI on Wikidata (property P1278) can be verified; `scripts/build_index.py` stores it as `identifier` and prints the count as `with_lei`.
+
+A name that scores below `MATCH_THRESHOLD` (and is not settled by the tiebreak) returns `"status": "unresolved"` and null company fields. `language` is validated on the request. Matching uses the alias strings in the index, including non-English aliases such as `上海航空`.
 
 ## Concurrency audit
 

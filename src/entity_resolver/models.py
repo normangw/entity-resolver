@@ -41,4 +41,5 @@ class ResolveResponse(BaseModel):
     parent_company: str | None
     headquarters: str | None
     country: str | None = None
+    source: Literal["local", "gleif"] | None = None
     confidence: float | None
