@@ -100,7 +100,7 @@ def test_resolve_rejects_blank_name():
 def test_resolve_uses_stubbed_model(monkeypatch):
     """The endpoint returns the model client's result without the real index."""
 
-    def fake_resolve(self: Resolver, name: str) -> Match:
+    def fake_resolve(self: Resolver, name: str, region: str = "world") -> Match:
         return Match(
             entity=Entity(
                 wikidata_id="QSTUB",
@@ -129,7 +129,7 @@ def test_health_answers_during_slow_resolve(monkeypatch):
     """/health returns while a slow /resolve is still in flight."""
     started = threading.Event()
 
-    def slow_resolve(self: Resolver, name: str) -> None:
+    def slow_resolve(self: Resolver, name: str, region: str = "world") -> None:
         started.set()
         time.sleep(1.0)
         return None
@@ -177,3 +177,24 @@ def test_requests_during_loading(monkeypatch):
         r = client.post("/resolve", json={"company_name": "Walmart"})
         assert r.status_code == 200
         assert r.json()["status"] == "resolved"
+
+
+def test_resolve_region_filters_results():
+    """A region the company is not in comes back unresolved."""
+    with TestClient(app) as client:
+        wait_ready(client)
+        inside = client.post(
+            "/resolve", json={"company_name": "Apple Inc.", "region": "us"}
+        ).json()
+        outside = client.post(
+            "/resolve", json={"company_name": "Apple Inc.", "region": "cn"}
+        ).json()
+    assert inside["status"] == "resolved"
+    assert inside["country"] == "US"
+    assert outside["status"] == "unresolved"
+
+
+def test_resolve_rejects_unknown_region():
+    with TestClient(app) as client:
+        r = client.post("/resolve", json={"company_name": "Apple", "region": "mars"})
+    assert r.status_code == 422
