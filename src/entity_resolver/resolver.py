@@ -9,6 +9,7 @@ import json
 import re
 import time
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,10 +93,15 @@ class Resolver:
     """Fuzzy-matches a company name against every known alias."""
 
     def __init__(
-        self, index_path: Path, threshold: float = 0.8, delay_seconds: float = 0.0
+        self,
+        index_path: Path,
+        threshold: float = 0.8,
+        delay_seconds: float = 0.0,
+        scorer: Callable[..., float] = fuzz.WRatio,
     ) -> None:
         records = json.loads(index_path.read_text(encoding="utf-8"))
         self._threshold = threshold
+        self._scorer = scorer
         self._delay = delay_seconds
         self._choices: list[str] = []
         self._owners: list[Entity] = []
@@ -134,7 +140,7 @@ class Resolver:
         best = process.extractOne(
             normalize(name),
             {i: self._choices[i] for i in rows},
-            scorer=fuzz.WRatio,
+            scorer=self._scorer,
         )
         if best is None:
             return None
@@ -151,7 +157,7 @@ class Resolver:
         found = process.extract(
             normalize(name),
             {i: self._choices[i] for i in rows},
-            scorer=fuzz.WRatio,
+            scorer=self._scorer,
             limit=None,
             score_cutoff=min_score * 100,
         )
