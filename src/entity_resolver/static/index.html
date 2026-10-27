@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entity Resolver</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1c2330; --muted: #5d6675;
+    --line: #dfe3ea; --accent: #2457c5; --ok: #1d7a46; --ok-bg: #e7f5ec;
+    --warn: #9a5b00; --warn-bg: #fff4e0; --err: #b3261e; --err-bg: #fdecea;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", "PingFang SC",
+      "Hiragino Sans", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 720px; margin: 0 auto; padding: 32px 16px 48px; }
+  header { display: flex; justify-content: space-between; align-items: baseline;
+    gap: 12px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 1.6rem; }
+  .sub { margin: 4px 0 24px; color: var(--muted); }
+  .badge { font-size: .8rem; padding: 2px 10px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); background: var(--card); }
+  .badge.ready { color: var(--ok); border-color: var(--ok); }
+  .badge.loading { color: var(--warn); border-color: var(--warn); }
+  .badge.down { color: var(--err); border-color: var(--err); }
+  form { background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 4px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 140px; }
+  .row > .grow { flex: 3 1 260px; }
+  input, select, button { font: inherit; padding: 9px 11px; border-radius: 8px;
+    border: 1px solid var(--line); background: #fff; color: var(--ink); width: 100%; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button[type=submit] { background: var(--accent); color: #fff; border-color: var(--accent);
+    cursor: pointer; font-weight: 600; margin-top: 12px; }
+  button[type=submit]:disabled { opacity: .6; cursor: progress; }
+  .examples { margin-top: 14px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { width: auto; padding: 4px 10px; font-size: .9rem; border-radius: 999px;
+    cursor: pointer; background: var(--bg); }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+  .chip small { color: var(--muted); margin-left: 4px; }
+  #result { margin-top: 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-left-width: 5px;
+    border-radius: 10px; padding: 16px; }
+  .card.resolved { border-left-color: var(--ok); }
+  .card.unresolved { border-left-color: var(--warn); background: var(--warn-bg); }
+  .card.error { border-left-color: var(--err); background: var(--err-bg); }
+  .status { font-size: .8rem; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; }
+  .resolved .status { color: var(--ok); }
+  .unresolved .status { color: var(--warn); }
+  .error .status { color: var(--err); }
+  .card h2 { margin: 4px 0 12px; font-size: 1.3rem; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  .none { color: var(--muted); font-style: italic; }
+  .meter { height: 6px; background: var(--line); border-radius: 3px; margin-top: 4px;
+    max-width: 200px; }
+  .meter span { display: block; height: 100%; background: var(--ok); border-radius: 3px; }
+  details { margin-top: 12px; font-size: .85rem; }
+  pre { background: #f0f2f5; padding: 10px; border-radius: 6px; overflow-x: auto; }
+  footer { margin-top: 28px; font-size: .85rem; color: var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Entity Resolver</h1>
+    <span id="ready" class="badge">checking…</span>
+  </header>
+  <p class="sub">Type a messy or non-English company name. The service matches it
+    against the alias index and returns the canonical company, its parent and its
+    headquarters.</p>
+
+  <form id="form" autocomplete="off">
+    <div class="row">
+      <div class="grow">
+        <label for="name">Company name</label>
+        <input id="name" name="company_name" maxlength="200" required
+          placeholder="e.g. Wal-Mart Stores Inc. or 上海航空">
+      </div>
+      <div>
+        <label for="language">Language</label>
+        <select id="language" name="language">
+          <option value="en">English (en)</option>
+          <option value="zh">Chinese (zh)</option>
+          <option value="ja">Japanese (ja)</option>
+          <option value="de">German (de)</option>
+          <option value="fr">French (fr)</option>
+          <option value="es">Spanish (es)</option>
+        </select>
+      </div>
+      <div>
+        <label for="region">Region</label>
+        <select id="region" name="region">
+          <option value="world">World</option>
+          <option value="us">United States</option>
+          <option value="cn">China</option>
+          <option value="gb">United Kingdom</option>
+          <option value="jp">Japan</option>
+          <option value="eu">European Union</option>
+        </select>
+      </div>
+    </div>
+    <button type="submit" id="submit">Resolve</button>
+
+    <div class="examples">
+      <label>Try an example</label>
+      <div class="chips" id="chips"></div>
+    </div>
+  </form>
+
+  <section id="result" aria-live="polite"></section>
+
+  <footer>
+    Calls <code>POST /resolve</code> on this server.
+    API docs: <a href="/docs">/docs</a> · <a href="/health">/health</a> ·
+    <a href="/ready">/ready</a>
+  </footer>
+</main>
+
+<script>
+  const EXAMPLES = [
+    { name: "Wal-Mart Stores Inc.", language: "en", note: "variant" },
+    { name: "Apple Computer", language: "en", note: "old name" },
+    { name: "Google LLC", language: "en", note: "legal suffix" },
+    { name: "上海航空", language: "zh", note: "Chinese" },
+    { name: "沃尔玛", language: "zh", note: "Chinese" },
+    { name: "阿里巴巴集团", language: "zh", note: "Chinese" },
+    { name: "Apple Inc.", language: "en", region: "cn", note: "wrong region" },
+    { name: "Zyxwv Quantum Bakery", language: "en", note: "unknown" },
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  const form = $("form"), result = $("result"), submit = $("submit");
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
+  const val = (v) => (v == null || v === "" ? '<span class="none">none</span>' : esc(v));
+
+  for (const ex of EXAMPLES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.innerHTML = esc(ex.name) + "<small>" + esc(ex.note) + "</small>";
+    b.addEventListener("click", () => {
+      $("name").value = ex.name;
+      $("language").value = ex.language;
+      $("region").value = ex.region || "world";
+      form.requestSubmit();
+    });
+    $("chips").appendChild(b);
+  }
+
+  function render(data) {
+    const raw = "<details><summary>Raw JSON</summary><pre>" +
+      esc(JSON.stringify(data, null, 2)) + "</pre></details>";
+    if (data.status !== "resolved") {
+      result.innerHTML = '<div class="card unresolved"><div class="status">Unresolved</div>' +
+        "<h2>No confident match for “" + esc(data.input) + "”</h2>" +
+        "<p>No company in the index scored above the match threshold" +
+        ($("region").value !== "world" ? " within the selected region" : "") +
+        ". Check the spelling, try another variant, or widen the region to World.</p>" +
+        raw + "</div>";
+      return;
+    }
+    const pct = Math.round((data.confidence ?? 0) * 100);
+    const wd = data.wikidata_id
+      ? '<a href="https://www.wikidata.org/wiki/' + encodeURIComponent(data.wikidata_id) +
+        '" target="_blank" rel="noopener">' + esc(data.wikidata_id) + "</a>"
+      : val(null);
+    result.innerHTML = '<div class="card resolved"><div class="status">Resolved</div>' +
+      "<h2>" + esc(data.canonical_name) + "</h2><dl>" +
+      "<dt>Input</dt><dd>" + val(data.input) + "</dd>" +
+      "<dt>Parent company</dt><dd>" + val(data.parent_company) + "</dd>" +
+      "<dt>Headquarters</dt><dd>" + val(data.headquarters) + "</dd>" +
+      "<dt>Country</dt><dd>" + val(data.country) + "</dd>" +
+      "<dt>Wikidata ID</dt><dd>" + wd + "</dd>" +
+      "<dt>Confidence</dt><dd>" + pct + '%<div class="meter"><span style="width:' +
+      pct + '%"></span></div></dd>' +
+      "</dl>" + raw + "</div>";
+  }
+
+  function renderError(title, detail) {
+    result.innerHTML = '<div class="card error"><div class="status">Error</div>' +
+      "<h2>" + esc(title) + "</h2><p>" + esc(detail) + "</p></div>";
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const company_name = $("name").value.trim();
+    if (!company_name) { renderError("Enter a company name", "The name cannot be blank."); return; }
+    submit.disabled = true;
+    submit.textContent = "Resolving…";
+    try {
+      const r = await fetch("/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ company_name, language: $("language").value, region: $("region").value }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok) render(data);
+      else if (r.status === 503) renderError("Model still loading", "The alias index is loading. Try again in a few seconds.");
+      else if (r.status === 422) renderError("Invalid input", (data.detail || []).map((d) => d.msg).join("; ") || "The request was rejected.");
+      else renderError("Request failed (" + r.status + ")", JSON.stringify(data));
+    } catch (err) {
+      renderError("Could not reach the API", String(err));
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "Resolve";
+      checkReady();
+    }
+  });
+
+  async function checkReady() {
+    const badge = $("ready");
+    try {
+      const r = await fetch("/ready");
+      badge.className = "badge " + (r.ok ? "ready" : "loading");
+      badge.textContent = r.ok ? "model ready" : "model loading";
+      if (!r.ok) setTimeout(checkReady, 2000);
+    } catch {
+      badge.className = "badge down";
+      badge.textContent = "API unreachable";
+    }
+  }
+  checkReady();
+</script>
+</body>
+</html>

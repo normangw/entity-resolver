@@ -198,3 +198,23 @@ def test_resolve_rejects_unknown_region():
     with TestClient(app) as client:
         r = client.post("/resolve", json={"company_name": "Apple", "region": "mars"})
     assert r.status_code == 422
+
+
+def test_index_serves_web_ui():
+    """GET / returns the HTML page that calls POST /resolve."""
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    body = r.text
+    assert 'fetch("/resolve"' in body
+    assert "上海航空" in body  # a non-English example input
+    assert "Unresolved" in body
+
+
+def test_index_not_in_openapi_schema():
+    """The UI route is hidden from /docs so the documented API stays clean."""
+    with TestClient(app) as client:
+        paths = client.get("/openapi.json").json()["paths"]
+    assert "/" not in paths
+    assert "/resolve" in paths
