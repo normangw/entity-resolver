@@ -195,7 +195,7 @@ def main() -> None:
     for alias, qids in by_alias.items():
         countries = {owner[q]["country"] for q in qids}
         if len(qids) > 1 and len(countries) > 1:
-            for q in qids:
+            for q in sorted(qids):
                 region = region_of(owner[q]["country"])
                 in_region = [
                     x for x in qids if region and owner[x]["country"] in REGIONS[region]

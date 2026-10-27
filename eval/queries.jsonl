@@ -122,19 +122,19 @@
 {"query": "エス・サイエンス", "expected": "Q17227819", "category": "multilingual"}
 {"query": "モーダスリンク・グローバル・ソリューションズ", "expected": "Q6889843", "category": "multilingual"}
 {"query": "科興", "expected": "Q3485048", "category": "multilingual"}
-{"query": "sg", "expected": "Q11243007", "category": "ambiguous", "region": "jp"}
-{"query": "ca", "expected": "Q11304138", "category": "ambiguous", "region": "jp"}
+{"query": "sg", "expected": "Q270363", "category": "ambiguous", "region": "eu"}
+{"query": "ca", "expected": "Q600624", "category": "ambiguous", "region": "us"}
 {"query": "apa", "expected": "Q119991", "category": "ambiguous", "region": "us"}
-{"query": "swire pacific", "expected": "Q11723118", "category": "ambiguous", "region": "cn"}
+{"query": "swire pacific", "expected": "Q1141162", "category": "ambiguous", "region": "gb"}
 {"query": "sisco", "expected": "Q7615829", "category": "ambiguous", "region": "us"}
 {"query": "cvc", "expected": "Q157062", "category": "ambiguous", "region": "gb"}
-{"query": "fe", "expected": "Q498662", "category": "ambiguous", "region": "jp"}
+{"query": "fe", "expected": "Q89100104", "category": "ambiguous", "region": "eu"}
 {"query": "paramount", "expected": "Q76846862", "category": "ambiguous", "region": "us"}
 {"query": "opendoor", "expected": "Q56348814", "category": "ambiguous", "region": "jp"}
 {"query": "kcg", "expected": "Q16980911", "category": "ambiguous", "region": "us"}
 {"query": "stx", "expected": "Q19868261", "category": "ambiguous", "region": "us"}
 {"query": "sunday", "expected": "Q7639364", "category": "ambiguous", "region": "cn"}
-{"query": "世纪互联", "expected": "Q25230554", "category": "ambiguous", "region": "cn"}
+{"query": "世纪互联", "expected": "Q5063092", "category": "ambiguous", "region": "us"}
 {"query": "bird", "expected": "Q55639320", "category": "ambiguous", "region": "us"}
 {"query": "just", "expected": "Q140882591", "category": "ambiguous", "region": "gb"}
 {"query": "新世界", "expected": "Q24834814", "category": "ambiguous", "region": "cn"}
