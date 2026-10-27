@@ -18,12 +18,12 @@ class Settings(BaseSettings):
     match_threshold: float = Field(default=0.8, ge=0, le=1)
     model_delay_seconds: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
-    # Capital IQ tiebreak for low-confidence matches. Off by default; only a mock
-    # client exists, so enabling it never makes a network call.
-    capiq_enabled: bool = False
-    capiq_low_threshold: float = Field(default=0.6, ge=0, le=1)
-    capiq_daily_budget: int = Field(default=1000, gt=0)
-    capiq_timeout: float = Field(default=5.0, gt=0)
+    # GLEIF tiebreak for low-confidence matches. Off by default: enabling it makes
+    # network calls to the public GLEIF API.
+    gleif_enabled: bool = False
+    gleif_low_threshold: float = Field(default=0.6, ge=0, le=1)
+    gleif_daily_budget: int = Field(default=1000, gt=0)
+    gleif_timeout: float = Field(default=5.0, gt=0)
 
     model_config = SettingsConfigDict(
         env_file=".env",

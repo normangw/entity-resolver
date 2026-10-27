@@ -5,8 +5,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 
-from entity_resolver.capiq import CapIQBudget, MockCapIQClient, Verified, tiebreak
 from entity_resolver.config import settings
+from entity_resolver.gleif import Budget, HttpGleifClient, Verified, tiebreak
 from entity_resolver.models import (
     HealthResponse,
     ReadyResponse,
@@ -44,8 +44,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     503 until the load finishes.
     """
     app.state.resolver = None
-    app.state.capiq = MockCapIQClient() if settings.capiq_enabled else None
-    app.state.capiq_budget = CapIQBudget(settings.capiq_daily_budget)
+    app.state.gleif = (
+        HttpGleifClient(timeout=settings.gleif_timeout)
+        if settings.gleif_enabled
+        else None
+    )
+    app.state.gleif_budget = Budget(settings.gleif_daily_budget)
     load_task = asyncio.create_task(_load_into(app))
     try:
         yield
@@ -72,15 +76,15 @@ async def ready(request: Request, response: Response) -> ReadyResponse:
 
 
 async def _escalate(request: Request, resolver: Resolver, body: ResolveRequest):
-    """Ask Capital IQ to settle a low-confidence match; None if it cannot."""
-    client = request.app.state.capiq
+    """Ask GLEIF to settle a low-confidence match; None if it cannot."""
+    client = request.app.state.gleif
     if client is None:
         return None
     candidates = await asyncio.to_thread(
         resolver.candidates,
         body.company_name,
         body.region,
-        settings.capiq_low_threshold,
+        settings.gleif_low_threshold,
     )
     try:
         return await asyncio.wait_for(
@@ -89,13 +93,13 @@ async def _escalate(request: Request, resolver: Resolver, body: ResolveRequest):
                 candidates,
                 client,
                 settings.match_threshold,
-                request.app.state.capiq_budget,
+                request.app.state.gleif_budget,
             ),
-            timeout=settings.capiq_timeout,
+            timeout=settings.gleif_timeout,
         )
     except Exception:
         # An unavailable second opinion must not fail the request.
-        logger.exception("Capital IQ tiebreak failed")
+        logger.exception("GLEIF tiebreak failed")
         return None
 
 
@@ -121,9 +125,9 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
                 wikidata_id=e.wikidata_id,
                 canonical_name=e.canonical_name,
                 parent_company=e.parent_company,
-                headquarters=verified.company.address or e.headquarters,
+                headquarters=e.headquarters,
                 country=e.country,
-                source="capiq",
+                source="gleif",
                 confidence=verified.match.score,
             )
         return ResolveResponse(

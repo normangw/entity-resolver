@@ -208,7 +208,7 @@ def _walmart_candidate() -> Match:
             parent_company=None,
             headquarters="Bentonville, Arkansas, United States",
             country="US",
-            identifier="WMT:NYSE",
+            identifier="Y87794H0US1R65VBXU25",
         ),
         score=0.65,
     )
@@ -225,26 +225,51 @@ def _force_low_confidence(monkeypatch) -> None:
     )
 
 
-def test_low_confidence_is_settled_by_capiq(monkeypatch):
-    """With the tiebreak on, a candidate whose official name fits is accepted."""
+_WALMART_RECORD = {
+    "data": [
+        {
+            "id": "Y87794H0US1R65VBXU25",
+            "attributes": {
+                "entity": {
+                    "legalName": {"name": "WALMART INC."},
+                    "status": "ACTIVE",
+                }
+            },
+        }
+    ]
+}
+
+
+def _stub_gleif(monkeypatch, payload=_WALMART_RECORD) -> None:
+    from entity_resolver import gleif
+
+    monkeypatch.setattr(
+        gleif.HttpGleifClient,
+        "_fetch",
+        lambda self, leis: gleif.parse_response(payload),
+    )
+
+
+def test_low_confidence_is_settled_by_gleif(monkeypatch):
+    """With the tiebreak on, a candidate whose legal name fits is accepted."""
     from entity_resolver.config import settings
 
     _force_low_confidence(monkeypatch)
-    monkeypatch.setattr(settings, "capiq_enabled", True)
+    _stub_gleif(monkeypatch)
+    monkeypatch.setattr(settings, "gleif_enabled", True)
     with TestClient(app) as client:
         wait_ready(client)
         data = client.post("/resolve", json={"company_name": "Walmart Inc"}).json()
     assert data["status"] == "resolved"
-    assert data["source"] == "capiq"
-    assert "Bentonville" in data["headquarters"]
-    assert "702 Southwest" in data["headquarters"]  # Capital IQ's address
+    assert data["source"] == "gleif"
+    assert "Bentonville" in data["headquarters"]  # still Wikidata's, not GLEIF's
 
 
-def test_low_confidence_stays_unresolved_when_capiq_is_off(monkeypatch):
+def test_low_confidence_stays_unresolved_when_gleif_is_off(monkeypatch):
     from entity_resolver.config import settings
 
     _force_low_confidence(monkeypatch)
-    monkeypatch.setattr(settings, "capiq_enabled", False)
+    monkeypatch.setattr(settings, "gleif_enabled", False)
     with TestClient(app) as client:
         wait_ready(client)
         data = client.post("/resolve", json={"company_name": "Walmart Inc"}).json()
@@ -252,16 +277,16 @@ def test_low_confidence_stays_unresolved_when_capiq_is_off(monkeypatch):
     assert data["source"] is None
 
 
-def test_capiq_failure_falls_back_to_unresolved(monkeypatch):
-    from entity_resolver import main
+def test_gleif_failure_falls_back_to_unresolved(monkeypatch):
+    from entity_resolver import gleif
     from entity_resolver.config import settings
 
-    async def boom(*args, **kwargs):
-        raise RuntimeError("capiq down")
+    def boom(self, leis):
+        raise OSError("gleif down")
 
     _force_low_confidence(monkeypatch)
-    monkeypatch.setattr(settings, "capiq_enabled", True)
-    monkeypatch.setattr(main, "tiebreak", boom)
+    monkeypatch.setattr(settings, "gleif_enabled", True)
+    monkeypatch.setattr(gleif.HttpGleifClient, "_fetch", boom)
     with TestClient(app) as client:
         wait_ready(client)
         r = client.post("/resolve", json={"company_name": "Walmart Inc"})

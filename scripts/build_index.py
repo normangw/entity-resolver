@@ -2,7 +2,9 @@
 
 Pulls every company that is listed on a stock exchange (statement P414 with no end
 date), country by country so each SPARQL query stays under the public endpoint's
-60 s limit, then fetches multilingual labels and aliases in batches. Writes the
+60 s limit, then fetches multilingual labels and aliases in batches, and each
+company's Legal Entity Identifier (P1278), stored as ``identifier``, which the GLEIF
+tiebreak uses. Writes the
 index in the same shape as ``src/entity_resolver/data/companies.json`` plus a
 ``.meta.json`` sidecar with the build date and counts.
 
@@ -33,33 +35,6 @@ ALIAS_BATCH = 250
 LANGUAGES = (
     "en mul zh zh-hans zh-hant zh-cn zh-hk zh-tw ja ko de fr es it pt ru ar hi tr nl sv"
 ).split()
-
-# Exchange (English label on Wikidata) -> Capital IQ exchange code. Best effort and
-# not checked against a live Capital IQ account: an unlisted exchange gets no
-# identifier, so that company is simply skipped by the Capital IQ tiebreak.
-CAPIQ_EXCHANGE = {
-    "new york stock exchange": "NYSE",
-    "nasdaq": "NASDAQGS",
-    "london stock exchange": "LSE",
-    "tokyo stock exchange": "TSE",
-    "hong kong stock exchange": "SEHK",
-    "stock exchange of hong kong": "SEHK",
-    "shanghai stock exchange": "SHSE",
-    "shenzhen stock exchange": "SZSE",
-    "euronext paris": "ENXTPA",
-    "euronext amsterdam": "ENXTAM",
-    "frankfurt stock exchange": "XTRA",
-    "xetra": "XTRA",
-    "six swiss exchange": "SWX",
-    "toronto stock exchange": "TSX",
-    "australian securities exchange": "ASX",
-    "borsa italiana": "BIT",
-    "bolsa de madrid": "BME",
-    "nasdaq stockholm": "OM",
-    "korea exchange": "KOSE",
-    "bombay stock exchange": "BSE",
-    "national stock exchange of india": "NSEI",
-}
 
 
 def sparql(query: str, attempts: int = 4) -> list[dict[str, dict[str, str]]]:
@@ -114,11 +89,10 @@ def fetch_listed(country_qid: str) -> list[dict[str, dict[str, str]]]:
     """Listed companies in one country, one row per (company, listing, HQ, parent)."""
     return sparql(
         f"""
-        SELECT ?c ?cLabel ?exLabel ?ticker ?hqLabel ?hqCountry ?parentLabel WHERE {{
+        SELECT ?c ?cLabel ?hqLabel ?hqCountry ?parentLabel WHERE {{
           ?c wdt:P17 wd:{country_qid} .
           ?c p:P414 ?st . ?st ps:P414 ?ex .
           FILTER NOT EXISTS {{ ?st pq:P582 ?end }}
-          OPTIONAL {{ ?st pq:P249 ?ticker }}
           OPTIONAL {{ ?c wdt:P159 ?hq . OPTIONAL {{ ?hq wdt:P17 ?hqCountry }} }}
           OPTIONAL {{ ?c wdt:P749 ?parent }}
           SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en,mul". }}
@@ -144,6 +118,15 @@ def fetch_aliases(qids: list[str]) -> dict[str, list[str]]:
     for r in rows:
         found[qid(r["c"]["value"])].append(r["alias"]["value"])
     return found
+
+
+def fetch_leis(qids: list[str]) -> dict[str, str]:
+    """Legal Entity Identifier (Wikidata P1278) for a batch of companies, if any."""
+    values = " ".join(f"wd:{q}" for q in qids)
+    rows = sparql(
+        f"SELECT ?c ?lei WHERE {{ VALUES ?c {{ {values} }} ?c wdt:P1278 ?lei }}"
+    )
+    return {qid(r["c"]["value"]): r["lei"]["value"] for r in rows}
 
 
 # Indexes and funds can carry an exchange statement too; Wikidata's "instance of"
@@ -208,10 +191,6 @@ def collect(
             hq = val(row, "hqLabel")
             if hq and not is_placeholder(hq) and not rec["headquarters"]:
                 rec["headquarters"] = f"{hq}, {countries[iso]}"
-            ticker, exchange = val(row, "ticker"), val(row, "exLabel")
-            code = CAPIQ_EXCHANGE.get((exchange or "").lower())
-            if ticker and code and not rec["identifier"]:
-                rec["identifier"] = f"{ticker}:{code}"
     for rec in companies.values():
         if not rec["headquarters"]:
             rec["headquarters"] = countries[rec["country"]]
@@ -273,6 +252,19 @@ def main() -> None:
         aliases.update(found)
         print(f"  aliases {min(start + ALIAS_BATCH, len(ids))}/{len(ids)}")
 
+    for start in range(0, len(ids), ALIAS_BATCH):
+        batch = ids[start : start + ALIAS_BATCH]
+        cache = args.cache_dir / f"leis-{batch[0]}-{len(batch)}.json"
+        if cache.exists():
+            leis = json.loads(cache.read_text(encoding="utf-8"))
+        else:
+            leis = fetch_leis(batch)
+            cache.write_text(json.dumps(leis), encoding="utf-8")
+            time.sleep(PAUSE_SECONDS)
+        for q, lei in leis.items():
+            companies[q]["identifier"] = lei
+        print(f"  leis {min(start + ALIAS_BATCH, len(ids))}/{len(ids)}")
+
     records = []
     for q in ids:
         rec = companies[q]
@@ -290,7 +282,7 @@ def main() -> None:
         "countries": len(chosen),
         "companies": len(records),
         "aliases": sum(len(r["aliases"]) for r in records),
-        "with_identifier": sum(1 for r in records if r["identifier"]),
+        "with_lei": sum(1 for r in records if r["identifier"]),
     }
     args.out.with_suffix(".meta.json").write_text(
         json.dumps(meta, indent=2), encoding="utf-8"
