@@ -2,8 +2,10 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import FileResponse
 
 from entity_resolver.config import settings
 from entity_resolver.gleif import Budget, HttpGleifClient, Verified, tiebreak
@@ -16,6 +18,8 @@ from entity_resolver.models import (
 from entity_resolver.resolver import Resolver
 
 logger = logging.getLogger(__name__)
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _load_resolver() -> Resolver:
@@ -58,6 +62,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
+
+
+@app.get("/", include_in_schema=False)
+async def index() -> FileResponse:
+    """Serve the single-page web UI, which calls POST /resolve."""
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
 
 
 @app.get("/health", response_model=HealthResponse)

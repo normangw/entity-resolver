@@ -299,3 +299,23 @@ def test_local_match_reports_local_source():
         wait_ready(client)
         data = client.post("/resolve", json={"company_name": "Apple Inc."}).json()
     assert data["source"] == "local"
+
+
+def test_index_serves_web_ui():
+    """GET / returns the HTML page that calls POST /resolve."""
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    body = r.text
+    assert 'fetch("/resolve"' in body
+    assert "上海航空" in body  # a non-English example input
+    assert "Unresolved" in body
+
+
+def test_index_not_in_openapi_schema():
+    """The UI route is hidden from /docs so the documented API stays clean."""
+    with TestClient(app) as client:
+        paths = client.get("/openapi.json").json()["paths"]
+    assert "/" not in paths
+    assert "/resolve" in paths

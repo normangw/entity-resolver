@@ -49,6 +49,27 @@ The service will be available at `http://localhost:8000`.
 
 Interactive API docs: `http://localhost:8000/docs`
 
+## Web UI
+
+The service also serves a one-page web UI at the root URL, `http://localhost:8000/` (on Jetstream2, `http://<instance-public-ip>:8000/`). It is a single static file, `src/entity_resolver/static/index.html`, returned by `GET /` from the same FastAPI app and container, so there is no separate frontend to build or deploy, and it loads nothing from the internet.
+
+How to use it:
+
+1. Open the root URL in a browser. The badge in the top right reads **model ready** once `/ready` returns 200 (it shows **model loading** while the alias index loads).
+2. Type a company name, optionally pick a language and region, and press **Resolve**. The page sends `POST /resolve` with `company_name`, `language` and `region`.
+3. Or click one of the example chips. They cover name variants (`Wal-Mart Stores Inc.`, `Apple Computer`, `Google LLC`), non-English names (`上海航空`, `沃尔玛`, `阿里巴巴集团`), a region filter that excludes the match (`Apple Inc.` with region China) and a name that is not in the index (`Zyxwv Quantum Bakery`).
+
+What it shows:
+
+| Response | Display |
+|---|---|
+| `status: "resolved"` | Green card with the canonical name, parent company, headquarters, country, a link to the Wikidata entry and the match confidence |
+| `status: "unresolved"` | Amber card saying no company scored above `MATCH_THRESHOLD` (and within the region, if one was chosen) |
+| `503` | "Model still loading" message |
+| `422` / blank input | "Invalid input" message with the validation error |
+
+Each result has a **Raw JSON** toggle with the exact API response. `GET /` is left out of the OpenAPI schema, so `/docs` lists only the API endpoints.
+
 ## Running with Docker
 
 The service ships as one container image. Configuration is read at run time from `.env`; nothing secret is baked into the image (see `.dockerignore`). Where the model lives, and why, is written at the top of the `Dockerfile`.
@@ -98,6 +119,8 @@ export HOST=<instance-public-ip>
 curl http://$HOST:8000/health
 ```
 
+6. Open `http://$HOST:8000/` in a browser to use the web UI.
+
 ### Call every endpoint
 
 Set `HOST` to `localhost` on your machine, or to the instance's public IP.
@@ -106,6 +129,10 @@ Set `HOST` to `localhost` on your machine, or to the instance's public IP.
 # Health check
 curl http://$HOST:8000/health
 # {"status":"ok","version":"0.1.0"}
+
+# Readiness check (503 {"status":"not ready"} until the alias index has loaded)
+curl -i http://$HOST:8000/ready
+# {"status":"ready"}
 
 # Resolve a name in English
 curl -X POST http://$HOST:8000/resolve \
@@ -163,6 +190,9 @@ With the dependency layer cached, only `COPY src` and the final `uv sync` re-run
 
 ## API Endpoints
 
+### `GET /`
+Serve the web UI (HTML). See [Web UI](#web-ui). Not listed in `/docs`.
+
 ### `GET /health`
 Check that the service is running.
 
@@ -174,8 +204,21 @@ curl http://localhost:8000/health
 {"status": "ok", "version": "0.1.0"}
 ```
 
+### `GET /ready`
+Check that the alias index has finished loading. The model loads in the background after startup, so `/health` answers as soon as the process is up, while `/ready` and `/resolve` return `503` until loading completes.
+
+```bash
+curl -i http://localhost:8000/ready
+```
+
+```json
+{"status": "ready"}
+```
+
+Before the load finishes (or if it fails) the response is `503` with `{"status": "not ready"}`.
+
 ### `POST /resolve`
-Resolve a company name against the local alias index. The model is loaded once at startup. The synchronous score runs in a worker thread (`asyncio.to_thread`) so a slow match does not block `/health`.
+Resolve a company name against the local alias index. The model is loaded once at startup, in the background; until it is ready this returns `503`. The synchronous score runs in a worker thread (`asyncio.to_thread`) so a slow match does not block `/health`.
 
 ```bash
 curl -X POST http://localhost:8000/resolve \
