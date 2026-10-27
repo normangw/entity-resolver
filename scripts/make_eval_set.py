@@ -72,7 +72,6 @@ VARIANTS = [
 NOT_LISTED = [
     "Cargill",
     "Koch Industries",
-    "SpaceX",
     "Robert Bosch GmbH",
     "IKEA",
     "Mars, Incorporated",
@@ -80,7 +79,6 @@ NOT_LISTED = [
     "LEGO",
     "Rolex",
     "Bechtel",
-    "Publix Super Markets",
     "Fidelity Investments",
     "Epic Systems",
     "Meijer",
