@@ -65,6 +65,38 @@
   .meter span { display: block; height: 100%; background: var(--ok); border-radius: 3px; }
   details { margin-top: 12px; font-size: .85rem; }
   pre { background: #f0f2f5; padding: 10px; border-radius: 6px; overflow-x: auto; }
+  .panel { margin-top: 32px; }
+  .panel h2 { margin: 0; font-size: 1.3rem; }
+  input[type=checkbox] { width: auto; margin-right: 6px; }
+  input[type=file] { padding: 7px 9px; }
+  .check { display: flex; align-items: center; margin: 12px 0 0; color: var(--ink);
+    font-size: .95rem; }
+  .tablewrap { margin-top: 12px; overflow-x: auto; border: 1px solid var(--line);
+    border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
+  th, td { padding: 5px 9px; text-align: left; border-bottom: 1px solid var(--line);
+    white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+  th { background: var(--bg); color: var(--muted); font-weight: 600; }
+  th.pick, td.pick { background: #eaf0fc; }
+  tr:last-child td { border-bottom: 0; }
+  .bar { height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; }
+  .bar span { display: block; height: 100%; width: 0; background: var(--accent);
+    transition: width .2s; }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .stat { background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 12px; font-size: .85rem; color: var(--muted); }
+  .stat b { display: block; font-size: 1.2rem; color: var(--ink); }
+  ul.checks { list-style: none; margin: 8px 0 0; padding: 0; font-size: .92rem; }
+  ul.checks li { padding: 3px 0; }
+  ul.checks .ok { color: var(--ok); font-weight: 700; }
+  ul.checks .bad { color: var(--err); font-weight: 700; }
+  ul.checks small { color: var(--muted); margin-left: 6px; }
+  .banner { padding: 10px 14px; border-radius: 8px; font-weight: 600; margin-top: 8px; }
+  .banner.ok { background: var(--ok-bg); color: var(--ok); }
+  .banner.bad { background: var(--err-bg); color: var(--err); }
+  a.button { display: inline-block; margin-top: 14px; padding: 9px 16px; border-radius: 8px;
+    background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; }
+  .hint { font-size: .85rem; color: var(--muted); margin: 6px 0 0; }
   footer { margin-top: 28px; font-size: .85rem; color: var(--muted); }
   a { color: var(--accent); }
 </style>
@@ -119,8 +151,48 @@
 
   <section id="result" aria-live="polite"></section>
 
+  <section class="panel">
+    <h2>Resolve a spreadsheet</h2>
+    <p class="sub">Upload an Excel or CSV file, choose the column that holds company
+      names and a region, and download your file back with the resolver&rsquo;s columns
+      added. Your original rows and columns are never changed or removed.</p>
+    <form id="uform" autocomplete="off">
+      <label for="file">File (.xlsx, .xls or .csv)</label>
+      <input id="file" type="file" accept=".xlsx,.xls,.csv">
+      <p class="hint" id="limits"></p>
+      <div id="ustep2" hidden>
+        <div class="row" style="margin-top:12px">
+          <div id="sheetwrap">
+            <label for="sheet">Sheet</label>
+            <select id="sheet"></select>
+          </div>
+          <div class="grow">
+            <label for="column">Company name column</label>
+            <select id="column"></select>
+          </div>
+          <div>
+            <label for="uregion">Region</label>
+            <select id="uregion">
+              <option value="world">World</option>
+              <option value="us">United States</option>
+              <option value="cn">China</option>
+              <option value="gb">United Kingdom</option>
+              <option value="jp">Japan</option>
+              <option value="eu">European Union</option>
+            </select>
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" id="header" checked>
+          First row is a header</label>
+        <div class="tablewrap" id="preview"></div>
+        <button type="submit" id="ubtn">Resolve file</button>
+      </div>
+    </form>
+    <div id="uresult" aria-live="polite" style="margin-top:20px"></div>
+  </section>
+
   <footer>
-    Calls <code>POST /resolve</code> on this server.
+    Calls <code>POST /resolve</code> and <code>/upload</code> on this server.
     API docs: <a href="/docs">/docs</a> · <a href="/health">/health</a> ·
     <a href="/ready">/ready</a>
   </footer>
@@ -232,6 +304,128 @@
       badge.className = "badge down";
       badge.textContent = "API unreachable";
     }
+  }
+
+  // ---- Spreadsheet upload -------------------------------------------------
+  const uform = $("uform"), uresult = $("uresult"), ubtn = $("ubtn");
+  let up = null;  // {id, filename, kind, sheets, max_rows} of the current upload
+
+  const colLetter = (i) => {
+    let s = "";
+    for (i += 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
+    return s;
+  };
+  function uerror(title, detail) {
+    uresult.innerHTML = '<div class="card error"><div class="status">Error</div><h2>' +
+      esc(title) + "</h2><p>" + esc(detail) + "</p></div>";
+  }
+  async function detailOf(r) {
+    const d = await r.json().catch(() => ({}));
+    if (typeof d.detail === "string") return d.detail;
+    if (Array.isArray(d.detail)) return d.detail.map((x) => x.msg).join("; ");
+    return "Request failed (" + r.status + ")";
+  }
+
+  $("file").addEventListener("change", async () => {
+    const f = $("file").files[0];
+    up = null;
+    $("ustep2").hidden = true;
+    uresult.innerHTML = "";
+    if (!f) return;
+    const fd = new FormData();
+    fd.append("file", f);
+    $("limits").textContent = "Uploading…";
+    try {
+      const r = await fetch("/upload", { method: "POST", body: fd });
+      if (!r.ok) { $("limits").textContent = ""; uerror("Could not use this file", await detailOf(r)); return; }
+      up = await r.json();
+    } catch (err) { $("limits").textContent = ""; uerror("Could not reach the API", String(err)); return; }
+    $("limits").textContent = "Up to " + up.max_rows.toLocaleString() + " data rows per file.";
+    $("sheet").innerHTML = up.sheets.map((n) => '<option value="' + esc(n) + '">' + esc(n) + "</option>").join("");
+    $("sheetwrap").hidden = up.sheets.length < 2;
+    $("ustep2").hidden = false;
+    loadPreview();
+  });
+
+  async function loadPreview() {
+    if (!up) return;
+    const q = new URLSearchParams({ has_header: $("header").checked });
+    if (up.sheets.length) q.set("sheet", $("sheet").value);
+    const r = await fetch("/upload/" + up.id + "/preview?" + q);
+    if (!r.ok) { uerror("Could not read this sheet", await detailOf(r)); return; }
+    const p = await r.json();
+    $("column").innerHTML = p.columns.map((c, i) =>
+      '<option value="' + i + '">' + colLetter(i) + " — " + esc(c) + "</option>").join("");
+    $("column").value = p.suggested_column;
+    uresult.innerHTML = "";
+    drawPreview(p);
+    $("column").onchange = () => drawPreview(p);
+  }
+  function drawPreview(p) {
+    const pick = Number($("column").value);
+    const cls = (i) => (i === pick ? ' class="pick"' : "");
+    $("preview").innerHTML = "<table><thead><tr>" +
+      p.columns.map((c, i) => "<th" + cls(i) + ">" + esc(c) + "</th>").join("") +
+      "</tr></thead><tbody>" +
+      p.rows.map((row) => "<tr>" + row.map((v, i) => "<td" + cls(i) + ">" + esc(v) + "</td>").join("") + "</tr>").join("") +
+      "</tbody></table>";
+  }
+  $("sheet").addEventListener("change", loadPreview);
+  $("header").addEventListener("change", loadPreview);
+
+  uform.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!up) return;
+    ubtn.disabled = true;
+    ubtn.textContent = "Resolving…";
+    uresult.innerHTML = '<div class="bar"><span id="prog"></span></div><p class="hint" id="progtext">Starting…</p>';
+    try {
+      const body = { column: Number($("column").value), has_header: $("header").checked, region: $("uregion").value };
+      if (up.sheets.length) body.sheet = $("sheet").value;
+      const r = await fetch("/upload/" + up.id + "/resolve", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      if (!r.ok) { uerror("Could not start", await detailOf(r)); return; }
+      for (;;) {
+        const s = await (await fetch("/upload/" + up.id + "/status")).json();
+        const pct = s.total ? Math.round((100 * s.done) / s.total) : 0;
+        if ($("prog")) { $("prog").style.width = pct + "%"; $("progtext").textContent = s.done + " of " + s.total + " rows"; }
+        if (s.state === "error") { uerror("Resolving failed", s.error || "Unknown error"); return; }
+        if (s.state === "done") { renderSummary(s.summary); return; }
+        await new Promise((ok) => setTimeout(ok, 400));
+      }
+    } catch (err) {
+      uerror("Could not reach the API", String(err));
+    } finally {
+      ubtn.disabled = false;
+      ubtn.textContent = "Resolve file";
+    }
+  });
+
+  function renderSummary(s) {
+    const stat = (label, n) => '<div class="stat"><b>' + n + "</b>" + label + "</div>";
+    const failed = s.checks.filter((c) => !c.ok).length;
+    uresult.innerHTML =
+      '<div class="card ' + (s.passed ? "resolved" : "error") + '">' +
+      '<div class="status">' + (s.passed ? "Done" : "Check failed") + "</div>" +
+      '<div class="stats">' + stat("rows", s.rows) + stat("resolved", s.resolved) +
+      stat("unresolved", s.unresolved) + stat("blank names", s.blank) +
+      (s.skipped ? stat("skipped (too long)", s.skipped) : "") +
+      stat("unique names", s.unique_names) + "</div>" +
+      '<div class="banner ' + (s.passed ? "ok" : "bad") + '">' +
+      (s.passed ? "All " + s.checks.length + " integrity checks passed"
+                : failed + " integrity check(s) failed. Do not rely on this file.") + "</div>" +
+      '<ul class="checks">' + s.checks.map((c) =>
+        "<li><span class=\"" + (c.ok ? "ok" : "bad") + '">' + (c.ok ? "✓" : "✗") + "</span> " +
+        esc(c.name) + "<small>" + esc(c.detail) + "</small></li>").join("") + "</ul>" +
+      '<div class="tablewrap"><table><thead><tr><th>Input</th><th>Status</th><th>Canonical name</th>' +
+      "<th>Country</th><th>Confidence</th></tr></thead><tbody>" +
+      s.sample.map((r) => "<tr><td>" + esc(r.input) + "</td><td>" + esc(r.status) + "</td><td>" +
+        val(r.canonical_name) + "</td><td>" + val(r.country) + "</td><td>" +
+        (r.confidence == null ? val(null) : Math.round(r.confidence * 100) + "%") + "</td></tr>").join("") +
+      "</tbody></table></div>" +
+      '<a class="button" href="/upload/' + up.id + '/download" download>Download ' +
+      esc(s.download_name) + "</a></div>";
   }
   checkReady();
 </script>

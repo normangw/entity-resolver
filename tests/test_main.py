@@ -311,6 +311,7 @@ def test_index_serves_web_ui():
     assert 'fetch("/resolve"' in body
     assert "上海航空" in body  # a non-English example input
     assert "Unresolved" in body
+    assert 'fetch("/upload"' in body  # the spreadsheet upload panel
 
 
 def test_index_not_in_openapi_schema():

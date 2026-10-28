@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 
 from pydantic import Field, FilePath
@@ -24,6 +25,14 @@ class Settings(BaseSettings):
     gleif_low_threshold: float = Field(default=0.6, ge=0, le=1)
     gleif_daily_budget: int = Field(default=1000, gt=0)
     gleif_timeout: float = Field(default=5.0, gt=0)
+
+    # Spreadsheet uploads. Files live in upload_dir only until upload_ttl_seconds
+    # after upload; nothing from them is logged.
+    upload_dir: Path = Path(tempfile.gettempdir()) / "entity-resolver-uploads"
+    upload_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    upload_max_rows: int = Field(default=5000, gt=0)
+    upload_ttl_seconds: int = Field(default=3600, gt=0)
+    upload_max_running: int = Field(default=3, gt=0)
 
     model_config = SettingsConfigDict(
         env_file=".env",

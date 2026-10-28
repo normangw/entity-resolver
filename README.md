@@ -37,6 +37,11 @@ cp .env.example .env
 | `GLEIF_LOW_THRESHOLD` | `0.6` | Lowest score a candidate may have to be sent to the tiebreak |
 | `GLEIF_DAILY_BUDGET` | `1000` | GLEIF requests allowed per day. GLEIF is free but shared, so this is a courtesy cap |
 | `GLEIF_TIMEOUT` | `5` | Seconds to wait for GLEIF before giving up |
+| `UPLOAD_DIR` | `<system temp>/entity-resolver-uploads` | Where uploaded spreadsheets and results are kept until they expire |
+| `UPLOAD_MAX_BYTES` | `10485760` | Largest accepted upload (10 MB) |
+| `UPLOAD_MAX_ROWS` | `5000` | Most data rows resolved per file |
+| `UPLOAD_TTL_SECONDS` | `3600` | Uploads and results are deleted this long after upload |
+| `UPLOAD_MAX_RUNNING` | `3` | Files resolved at the same time; more get `429` |
 | `ALIAS_INDEX_PATH` | bundled `companies.json` | Local alias index loaded once at startup |
 
 ## Running the service
@@ -69,6 +74,21 @@ What it shows:
 | `422` / blank input | "Invalid input" message with the validation error |
 
 Each result has a **Raw JSON** toggle with the exact API response. `GET /` is left out of the OpenAPI schema, so `/docs` lists only the API endpoints.
+
+### Resolve a spreadsheet
+
+Below the single-name form, **Resolve a spreadsheet** takes an `.xlsx`, `.xls` or `.csv` file:
+
+1. Choose the file. The page uploads it (`POST /upload`) and shows the first rows.
+2. Pick the **sheet** (workbooks with several), tick or untick **First row is a header**, pick the **company name column** (the likely one is preselected) and the **region**.
+3. Press **Resolve file**. A progress bar follows the job; each unique name is resolved once.
+4. Read the summary and the integrity checks, then **Download** the result: your original rows and columns, unchanged, with eight columns appended (`Resolver status`, `Canonical name`, `Wikidata ID`, `Parent company`, `Headquarters`, `Country`, `Confidence`, `Source`). A csv comes back as csv; `.xlsx` and `.xls` come back as `.xlsx`.
+
+Row statuses are `resolved`, `unresolved`, `blank` (empty name cell) and `skipped` (name over 200 characters). No row is ever dropped or reordered.
+
+**Integrity checks.** After writing the result the service reads it back and compares it with the input: row count, original headers, every original cell, every company name, a valid status on every row, and a name, Wikidata ID and confidence on every resolved row. If any check fails the page says so and the file should not be used.
+
+**Safety.** The file type is read from the file's bytes and must match the extension. Macro workbooks (`.xlsm`, or a `.xlsx` holding macros) and zip bombs are refused. Formulas are never evaluated, and text that could run as a formula in Excel is written back as plain text. Uploads are deleted `UPLOAD_TTL_SECONDS` after upload, and cell contents are never logged.
 
 ## Running with Docker
 
@@ -192,6 +212,25 @@ With the dependency layer cached, only `COPY src` and the final `uv sync` re-run
 
 ### `GET /`
 Serve the web UI (HTML). See [Web UI](#web-ui). Not listed in `/docs`.
+
+### Spreadsheet endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /upload` (multipart `file`) | Save and inspect a file. Returns `id`, `kind`, `sheets`, `max_rows`. `400` for a bad or refused file, `413` if too large |
+| `GET /upload/{id}/preview?sheet=&has_header=` | Column labels, first rows and a suggested name column |
+| `POST /upload/{id}/resolve` | Body `{"sheet", "has_header", "column", "region"}`. Starts the job (`202`). `400` for a bad choice, `409` if already running, `429` if too busy, `503` while the model loads |
+| `GET /upload/{id}/status` | `state` (`uploaded`, `running`, `done`, `error`), progress, and the summary with the integrity checks when done |
+| `GET /upload/{id}/download` | The resolved file (`409` until done) |
+
+```bash
+curl -F file=@companies.xlsx http://localhost:8000/upload
+# {"id":"<id>","filename":"companies.xlsx","kind":"xlsx","sheets":["Sheet1"],"max_rows":5000}
+curl -X POST http://localhost:8000/upload/<id>/resolve \
+  -H 'Content-Type: application/json' -d '{"column": 0, "region": "us"}'
+curl http://localhost:8000/upload/<id>/status
+curl -OJ http://localhost:8000/upload/<id>/download
+```
 
 ### `GET /health`
 Check that the service is running.
