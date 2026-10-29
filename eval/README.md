@@ -31,9 +31,9 @@ scorers. `variant`, `typo` and `not_listed` carry the signal.
 | Method | Accuracy | Wrong | Missed | Unresolved ok |
 |---|---|---|---|---|
 | Exact match on normalized alias (baseline) | 79.9% | 0.7% | 19.4% | 100.0% |
-| `WRatio` at 0.80 (current default) | 95.8% | 4.2% | 0.0% | 9.4% |
+| `WRatio` at 0.80 (previous default) | 95.8% | 4.2% | 0.0% | 9.4% |
 | `ratio` at 0.85 | 94.4% | 0.7% | 4.9% | 87.5% |
-| `ratio` at 0.90 | 94.4% | 0.7% | 4.9% | 100.0% |
+| `ratio` at 0.90 (current default) | 94.4% | 0.7% | 4.9% | 100.0% |
 
 "Unresolved ok" is the share of `not_listed` queries correctly left unresolved.
 `WRatio` includes a partial-substring score that returns 0.9 for almost any short
@@ -43,18 +43,21 @@ separates the cases. Full output: run the commands above.
 
 ## Decision and known limitation
 
-**Decision:** the default scorer stays `WRatio` at a 0.80 threshold. It has the highest
-accuracy on the set (95.8%) and loses nothing to a missed match (0.0% missed), which
-matters for the main use, cleaning a list of real company names. Plain `ratio` at 0.85
-is the documented alternative; switching is the `scorer=` argument of `Resolver` and
-`MATCH_THRESHOLD`.
+**Decision:** the default scorer is plain `ratio` at a 0.90 threshold. `WRatio` at 0.80
+scored higher overall (95.8% against 94.4%), but only because it almost never leaves a
+name unresolved: it correctly rejected 9.4% of unlisted names, so a private company or
+gibberish usually came back as a wrong match with a confident score (for example
+"Instagram" -> "S.T. Corp", "YouTube" -> "UTair Aviation"). The index holds listed
+companies only, so most subsidiaries and brands are not in it, and a wrong answer
+there is worse than no answer. `ratio` at 0.90 rejects all of them on this set (at 0.85, 87.5%; "Beats Electronics" matched "Bharat Electronics" at 0.857) with the same accuracy. The
+tiebreak verifier does not help with `WRatio`, because it only runs on low-confidence
+results and these are not low-confidence. Switching back is the `scorer=` argument of
+`Resolver` and `MATCH_THRESHOLD`.
 
-**Limitation:** `WRatio` at 0.80 correctly leaves only 9.4% of unlisted names
-unresolved, so a private company or gibberish name usually comes back as a wrong match
-with a confident score. The tiebreak verifier does not help here, because it only runs
-on low-confidence results and these are not low-confidence. Plain `ratio` at 0.85
-rejects 87.5% of them at the cost of 4.9% missed matches. The `not_listed` set is
-small (32 names), so these percentages are rough.
+**Limitation:** `ratio` at 0.90 misses 4.9% of real matches, mostly typos (23.3% of the
+typo category). The `not_listed` set is small (32 names), so these percentages are
+rough. A private subsidiary resolves only if it has its own entry in the index (for
+example Audi, Whole Foods); otherwise it stays unresolved.
 
 Preprocessing ablation (`ratio` at 0.85): full 94.4%, no suffix stripping 90.3%,
 lowercase only 88.2%. Accent folding changes nothing on this set.

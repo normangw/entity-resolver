@@ -109,7 +109,7 @@ def test_candidates_are_distinct_companies_best_first(tmp_path):
 
 
 def test_scorer_is_configurable(tmp_path):
-    """WRatio accepts a name that merely contains a short alias; ratio does not."""
+    """WRatio accepts a name containing a short alias; the default ratio does not."""
     from rapidfuzz import fuzz
 
     path = tmp_path / "index.json"
@@ -127,5 +127,5 @@ def test_scorer_is_configurable(tmp_path):
         ),
         encoding="utf-8",
     )
-    assert Resolver(path).resolve("Cargill") is not None  # default WRatio
-    assert Resolver(path, scorer=fuzz.ratio).resolve("Cargill") is None
+    assert Resolver(path, scorer=fuzz.WRatio).resolve("Cargill") is not None
+    assert Resolver(path).resolve("Cargill") is None  # the default is ratio

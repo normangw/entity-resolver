@@ -31,7 +31,7 @@ cp .env.example .env
 | `APP_VERSION` | `0.1.0` | Version string |
 | `DEBUG` | `false` | Enable debug mode |
 | `WIKIDATA_TIMEOUT` | `10` | Timeout in seconds for Wikidata requests |
-| `MATCH_THRESHOLD` | `0.8` | Minimum RapidFuzz score, as a fraction, to accept a match |
+| `MATCH_THRESHOLD` | `0.9` | Minimum RapidFuzz score, as a fraction, to accept a match |
 | `MODEL_DELAY_SECONDS` | `0` | Seconds `Resolver.resolve` sleeps before scoring. Stands in for a slow model; leave at `0` in normal use |
 | `GLEIF_ENABLED` | `false` | Turn on the GLEIF tiebreak for low-confidence matches. When on, the service calls the public GLEIF API |
 | `GLEIF_LOW_THRESHOLD` | `0.6` | Lowest score a candidate may have to be sent to the tiebreak |

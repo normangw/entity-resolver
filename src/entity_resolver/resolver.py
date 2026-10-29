@@ -95,9 +95,9 @@ class Resolver:
     def __init__(
         self,
         index_path: Path,
-        threshold: float = 0.8,
+        threshold: float = 0.9,
         delay_seconds: float = 0.0,
-        scorer: Callable[..., float] = fuzz.WRatio,
+        scorer: Callable[..., float] = fuzz.ratio,
     ) -> None:
         records = json.loads(index_path.read_text(encoding="utf-8"))
         self._threshold = threshold
