@@ -168,7 +168,9 @@ def test_resolve_endpoint_falls_back_to_wikidata(monkeypatch):
     monkeypatch.setattr(settings, "wikidata_fallback", True)
     monkeypatch.setattr(
         "entity_resolver.main.WikidataClient",
-        lambda timeout, threshold: WikidataClient(timeout, threshold, fetch=YOUTUBE),
+        lambda timeout, threshold, cache_ttl: WikidataClient(
+            timeout, threshold, fetch=YOUTUBE
+        ),
     )
     with TestClient(app) as client:
         wait_ready(client)
@@ -184,6 +186,90 @@ def test_resolve_endpoint_does_not_call_wikidata_by_default():
         data = client.post("/resolve", json={"company_name": "YouTube"}).json()
     assert data["status"] == "unresolved"
     assert data["source"] is None
+
+
+class Counting:
+    """Wraps a fetch and counts how many Wikidata requests it served."""
+
+    def __init__(self, fetch):
+        self._fetch = fetch
+        self.calls = 0
+
+    def __call__(self, params: dict[str, str]) -> dict[str, Any]:
+        self.calls += 1
+        return self._fetch(params)
+
+
+def test_repeat_lookup_is_served_from_cache():
+    fetch = Counting(YOUTUBE)
+    client = WikidataClient(fetch=fetch)
+    first = client.lookup("YouTube")
+    served = fetch.calls
+    assert served > 0
+    assert client.lookup("youtube") == first  # same normalized name
+    assert fetch.calls == served
+
+
+def test_not_found_is_cached_too():
+    fetch = Counting(fake_wikidata([], {}, {}))
+    client = WikidataClient(fetch=fetch)
+    assert client.lookup("Zyxwv Quantum Bakery") is None
+    assert client.lookup("Zyxwv Quantum Bakery") is None
+    assert fetch.calls == 1
+
+
+def test_failures_are_not_cached():
+    attempts = 0
+
+    def flaky(params: dict[str, str]) -> dict[str, Any]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("timed out")
+        return YOUTUBE(params)
+
+    client = WikidataClient(fetch=flaky)
+    with pytest.raises(WikidataUnavailable):
+        client.lookup("YouTube")
+    match = client.lookup("YouTube")
+    assert match is not None
+    assert match.entity.parent_company == "Google"
+
+
+def test_cache_entry_expires_after_ttl():
+    now = 1000.0
+    fetch = Counting(YOUTUBE)
+    client = WikidataClient(fetch=fetch, cache_ttl=60, clock=lambda: now)
+    client.lookup("YouTube")
+    served = fetch.calls
+    now += 59
+    client.lookup("YouTube")
+    assert fetch.calls == served
+    now += 2
+    client.lookup("YouTube")
+    assert fetch.calls > served
+
+
+def test_cache_evicts_the_least_recently_used_name():
+    fetch = Counting(fake_wikidata([], {}, {}))
+    client = WikidataClient(fetch=fetch, cache_size=2)
+    for name in ("Alpha", "Beta"):
+        client.lookup(name)
+    client.lookup("Alpha")  # Beta is now the least recently used
+    client.lookup("Gamma")  # evicts Beta
+    before = fetch.calls
+    client.lookup("Alpha")
+    assert fetch.calls == before
+    client.lookup("Beta")
+    assert fetch.calls == before + 1
+
+
+def test_zero_ttl_disables_the_cache():
+    fetch = Counting(fake_wikidata([], {}, {}))
+    client = WikidataClient(fetch=fetch, cache_ttl=0)
+    client.lookup("Alpha")
+    client.lookup("Alpha")
+    assert fetch.calls == 2
 
 
 @pytest.mark.skipif(not os.environ.get("RUN_LIVE_TESTS"), reason="hits real Wikidata")
@@ -204,7 +290,9 @@ def test_resolve_endpoint_returns_503_when_wikidata_is_down(monkeypatch):
     monkeypatch.setattr(settings, "wikidata_fallback", True)
     monkeypatch.setattr(
         "entity_resolver.main.WikidataClient",
-        lambda timeout, threshold: WikidataClient(timeout, threshold, fetch=down),
+        lambda timeout, threshold, cache_ttl: WikidataClient(
+            timeout, threshold, fetch=down
+        ),
     )
     with TestClient(app) as client:
         wait_ready(client)
@@ -217,7 +305,9 @@ def test_resolve_endpoint_skips_wikidata_for_a_region_filter(monkeypatch):
     monkeypatch.setattr(settings, "wikidata_fallback", True)
     monkeypatch.setattr(
         "entity_resolver.main.WikidataClient",
-        lambda timeout, threshold: WikidataClient(timeout, threshold, fetch=YOUTUBE),
+        lambda timeout, threshold, cache_ttl: WikidataClient(
+            timeout, threshold, fetch=YOUTUBE
+        ),
     )
     with TestClient(app) as client:
         wait_ready(client)

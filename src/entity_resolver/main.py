@@ -49,7 +49,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     app.state.resolver = None
     app.state.wikidata = (
-        WikidataClient(settings.wikidata_timeout, settings.match_threshold)
+        WikidataClient(
+            settings.wikidata_timeout,
+            settings.match_threshold,
+            cache_ttl=settings.wikidata_cache_ttl,
+        )
         if settings.wikidata_fallback
         else None
     )

@@ -32,6 +32,7 @@ cp .env.example .env
 | `DEBUG` | `false` | Enable debug mode |
 | `WIKIDATA_TIMEOUT` | `10` | Timeout in seconds for Wikidata requests |
 | `WIKIDATA_FALLBACK` | `false` | When a name is not in the local index, ask Wikidata (resolves subsidiaries such as YouTube or Beats Electronics). Off by default so tests and CI stay offline |
+| `WIKIDATA_CACHE_TTL` | `3600` | Seconds to remember a Wikidata answer, including "not found" (0 turns it off). Failures are never cached |
 | `MATCH_THRESHOLD` | `0.8` | Minimum RapidFuzz score, as a fraction, to accept a match |
 | `MODEL_DELAY_SECONDS` | `0` | Seconds `Resolver.resolve` sleeps before scoring. Stands in for a slow model; leave at `0` in normal use |
 | `ALIAS_INDEX_PATH` | bundled `companies.json` | Local alias index loaded once at startup |
