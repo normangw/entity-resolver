@@ -42,3 +42,4 @@ class ResolveResponse(BaseModel):
     headquarters: str | None
     country: str | None = None
     confidence: float | None
+    source: str | None  # "index" | "wikidata"; None when unresolved

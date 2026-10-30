@@ -15,6 +15,7 @@ from entity_resolver.models import (
     ResolveResponse,
 )
 from entity_resolver.resolver import Resolver
+from entity_resolver.wikidata import WikidataClient, WikidataUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     503 until the load finishes.
     """
     app.state.resolver = None
+    app.state.wikidata = (
+        WikidataClient(
+            settings.wikidata_timeout,
+            settings.match_threshold,
+            cache_ttl=settings.wikidata_cache_ttl,
+        )
+        if settings.wikidata_fallback
+        else None
+    )
     load_task = asyncio.create_task(_load_into(app))
     try:
         yield
@@ -90,6 +100,20 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
     # The model call is blocking, so hand it to a worker thread and keep the
     # event loop free for other requests (e.g. /health).
     match = await asyncio.to_thread(resolver.resolve, body.company_name, body.region)
+    source = "index"
+    wikidata: WikidataClient | None = getattr(request.app.state, "wikidata", None)
+    # Wikidata hits carry no country, so they cannot honor a region filter.
+    if match is None and wikidata is not None and body.region == "world":
+        try:
+            match = await asyncio.to_thread(
+                wikidata.lookup, body.company_name, body.language
+            )
+        except WikidataUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Wikidata is unavailable; retry shortly",
+            ) from exc
+        source = "wikidata"
     if match is None:
         return ResolveResponse(
             input=body.company_name,
@@ -100,6 +124,7 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
             headquarters=None,
             country=None,
             confidence=None,
+            source=None,
         )
     e = match.entity
     return ResolveResponse(
@@ -111,4 +136,5 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
         headquarters=e.headquarters,
         country=e.country,
         confidence=match.score,
+        source=source,
     )
