@@ -31,6 +31,7 @@ cp .env.example .env
 | `APP_VERSION` | `0.1.0` | Version string |
 | `DEBUG` | `false` | Enable debug mode |
 | `WIKIDATA_TIMEOUT` | `10` | Timeout in seconds for Wikidata requests |
+| `WIKIDATA_FALLBACK` | `false` | When a name is not in the local index, ask Wikidata (resolves subsidiaries such as YouTube or Beats Electronics). Off by default so tests and CI stay offline |
 | `MATCH_THRESHOLD` | `0.8` | Minimum RapidFuzz score, as a fraction, to accept a match |
 | `MODEL_DELAY_SECONDS` | `0` | Seconds `Resolver.resolve` sleeps before scoring. Stands in for a slow model; leave at `0` in normal use |
 | `ALIAS_INDEX_PATH` | bundled `companies.json` | Local alias index loaded once at startup |
@@ -231,9 +232,14 @@ curl -X POST http://localhost:8000/resolve \
   "parent_company": null,
   "headquarters": "Bentonville, Arkansas, United States",
   "country": "US",
-  "confidence": 1.0
+  "confidence": 1.0,
+  "source": "index"
 }
 ```
+
+`source` is `"index"` for a local match, `"wikidata"` for a fallback match, and null when unresolved.
+
+With `WIKIDATA_FALLBACK=true`, a name that misses the index is looked up on Wikidata, and `parent_company` is read from its `parent organization` or `owned by` statements (`YouTube` resolves to `Google`, `Beats Electronics` to `Apple Inc.`). A parent named like the company itself (`WhatsApp LLC` for WhatsApp) is a legal-entity wrapper and is skipped in favour of its owner. Wikidata hits carry no country, so the fallback is skipped when `region` is not `world`. If Wikidata cannot answer (timeout, or HTTP 429 when it throttles), `/resolve` returns `503` rather than `unresolved`, so an outage is never reported as "no such company". A company Wikidata has no owner for (such as Instagram) resolves with `parent_company: null`.
 
 `region` is optional and defaults to `world`. It limits matching to companies headquartered in that region: `world`, `us`, `cn`, `gb`, `jp` or `eu`. A company outside the chosen region comes back `unresolved`. Each record in the index carries an ISO `country` code that the filter uses.
 
