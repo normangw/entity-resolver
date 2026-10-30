@@ -3,6 +3,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse
@@ -21,6 +22,7 @@ from entity_resolver.models import (
     UploadStatus,
 )
 from entity_resolver.resolver import Resolver
+from entity_resolver.wikidata import WikidataClient, WikidataUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     503 until the load finishes.
     """
     app.state.resolver = None
+    app.state.wikidata = (
+        WikidataClient(settings.wikidata_timeout, settings.match_threshold)
+        if settings.wikidata_fallback
+        else None
+    )
     app.state.gleif = (
         HttpGleifClient(timeout=settings.gleif_timeout)
         if settings.gleif_enabled
@@ -120,7 +127,9 @@ async def _escalate(state, resolver: Resolver, name: str, region: str):
         return None
 
 
-async def resolve_name(state, name: str, region: str) -> ResolveResponse:
+async def resolve_name(
+    state, name: str, region: str, language: str = "en"
+) -> ResolveResponse:
     """Resolve one name with the loaded resolver, then GLEIF if it is unsure.
 
     Shared by POST /resolve and the file-upload jobs. ``state`` is ``app.state``.
@@ -129,6 +138,18 @@ async def resolve_name(state, name: str, region: str) -> ResolveResponse:
     # The model call is blocking, so hand it to a worker thread and keep the
     # event loop free for other requests (e.g. /health).
     match = await asyncio.to_thread(resolver.resolve, name, region)
+    source: Literal["local", "wikidata"] = "local"
+    wikidata: WikidataClient | None = getattr(state, "wikidata", None)
+    # Wikidata hits carry no country, so they cannot honor a region filter.
+    if match is None and wikidata is not None and region == "world":
+        try:
+            match = await asyncio.to_thread(wikidata.lookup, name, language)
+        except WikidataUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Wikidata is unavailable; retry shortly",
+            ) from exc
+        source = "wikidata"
     if match is None:
         verified: Verified | None = await _escalate(state, resolver, name, region)
         if verified is not None:
@@ -153,6 +174,7 @@ async def resolve_name(state, name: str, region: str) -> ResolveResponse:
             headquarters=None,
             country=None,
             confidence=None,
+            source=None,
         )
     e = match.entity
     return ResolveResponse(
@@ -163,8 +185,8 @@ async def resolve_name(state, name: str, region: str) -> ResolveResponse:
         parent_company=e.parent_company,
         headquarters=e.headquarters,
         country=e.country,
-        source="local",
         confidence=match.score,
+        source=source,
     )
 
 
@@ -176,7 +198,9 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Model is still loading",
         )
-    return await resolve_name(request.app.state, body.company_name, body.region)
+    return await resolve_name(
+        request.app.state, body.company_name, body.region, body.language
+    )
 
 
 # --- Spreadsheet upload -----------------------------------------------------
