@@ -5,12 +5,19 @@ subsidiaries (YouTube, Beats Electronics, ...), so on an index miss the service
 asks Wikidata and reads the owner from the ``parent organization`` (P749) or
 ``owned by`` (P127) statements. ``lookup`` is blocking network I/O, so async
 callers must run it off the event loop (``asyncio.to_thread``).
+
+Answers, including "no such company", are cached in memory for a while: Wikidata
+throttles quickly and a lookup costs three or more requests. Failures are never
+cached, so a throttled name is retried on the next call.
 """
 
 import json
 import logging
+import threading
+import time
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
@@ -82,9 +89,20 @@ class WikidataClient:
         timeout: float = 10,
         threshold: float = 0.8,
         fetch: Fetch | None = None,
+        cache_ttl: float = 3600,
+        cache_size: int = 1024,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        """``cache_ttl`` is in seconds; 0 turns the cache off."""
         self._threshold = threshold
         self._fetch = fetch or _http_fetch(timeout)
+        self._ttl = cache_ttl
+        self._max_entries = cache_size
+        self._clock = clock
+        self._cache: OrderedDict[tuple[str, str], tuple[float, Match | None]] = (
+            OrderedDict()
+        )
+        self._lock = threading.Lock()  # lookups run on several worker threads
 
     def lookup(self, name: str, language: str = "en") -> Match | None:
         """Return the best company match for ``name``, or None (blocking call).
@@ -93,11 +111,24 @@ class WikidataClient:
         could not answer (network failure, HTTP 429, bad JSON) this raises
         ``WikidataUnavailable`` so an outage is not mistaken for "not found".
         """
+        key = (normalize(name), language)
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None and self._clock() - cached[0] < self._ttl:
+                self._cache.move_to_end(key)
+                return cached[1]
         try:
-            return self._lookup(name, language)
+            match = self._lookup(name, language)
         except (OSError, ValueError) as exc:  # network failure or bad JSON
             logger.warning("Wikidata lookup failed for %r: %s", name, exc)
             raise WikidataUnavailable(str(exc)) from exc
+        if self._ttl > 0:
+            with self._lock:
+                self._cache[key] = (self._clock(), match)
+                self._cache.move_to_end(key)
+                while len(self._cache) > self._max_entries:
+                    self._cache.popitem(last=False)
+        return match
 
     def _lookup(self, name: str, language: str) -> Match | None:
         hits = self._fetch(
