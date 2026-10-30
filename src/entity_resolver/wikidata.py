@@ -37,6 +37,11 @@ _HQ_PROP = "P159"  # headquarters location
 # out planets, people and songs that share a name with a company.
 _COMPANY_PROPS = (*_PARENT_PROPS, _HQ_PROP, "P452")  # P452 = industry
 _END_TIME = "P582"
+_SHARE = "P1107"  # proportion: the fraction of the entity an owner holds
+_HUMAN = "Q5"
+# "owned by" (P127) also records shareholders, so it only counts as a parent when
+# the owner holds at least this fraction (statements with no stake stay in).
+_MIN_OWNER_SHARE = 0.5
 # A parent named like the entity itself ("WhatsApp LLC" for WhatsApp) is its
 # legal-entity wrapper, not a real owner; hop through it, at most this far.
 _MAX_WRAPPER_HOPS = 2
@@ -52,6 +57,8 @@ def _http_fetch(timeout: float) -> Fetch:
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data: dict[str, Any] = json.load(response)
+        if "error" in data:  # throttling can arrive as HTTP 200 with an error body
+            raise ValueError(f"Wikidata API error: {data['error'].get('code')}")
         return data
 
     return fetch
@@ -61,20 +68,36 @@ class WikidataUnavailable(Exception):
     """Wikidata could not be reached, throttled us, or sent an unusable reply."""
 
 
+def _share(statement: dict[str, Any]) -> float | None:
+    """The stake a statement records (0-1), or None when it records none."""
+    for snak in statement.get("qualifiers", {}).get(_SHARE, []):
+        try:
+            return float(snak["datavalue"]["value"]["amount"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
 def _statement_ids(
-    claims: dict[str, Any], prop: str, include_ended: bool = False
+    claims: dict[str, Any],
+    prop: str,
+    include_ended: bool = False,
+    min_share: float = 0.0,
 ) -> list[str]:
     """Entity ids a property points to, skipping deprecated statements.
 
-    Statements with an end time are skipped unless ``include_ended`` is set.
+    Statements with an end time are skipped unless ``include_ended`` is set, and
+    so are statements that record a stake below ``min_share``.
     """
     ids: list[str] = []
     for statement in claims.get(prop, []):
         snak = statement["mainsnak"]
+        share = _share(statement)
         if (
             statement.get("rank") == "deprecated"
             or (not include_ended and _END_TIME in statement.get("qualifiers", {}))
             or snak.get("snaktype") != "value"
+            or (share is not None and share < min_share)
         ):
             continue
         ids.append(snak["datavalue"]["value"]["id"])
@@ -168,7 +191,7 @@ class WikidataClient:
         self, hit: dict[str, Any], claims: dict[str, Any], score: float, language: str
     ) -> Match:
         name = hit.get("label", hit["id"])
-        parent_ids = [i for prop in _PARENT_PROPS for i in _statement_ids(claims, prop)]
+        parent_ids = self._owner_ids(claims)
         hq_ids = _statement_ids(claims, _HQ_PROP)[:1]
         labels = self._labels([*parent_ids, *hq_ids], language)
         # The first owner with a label wins: P749 before P127, and an owner
@@ -188,6 +211,35 @@ class WikidataClient:
         )
         return Match(entity=entity, score=round(score, 3))
 
+    def _owner_ids(
+        self, claims: dict[str, Any], include_ended: bool = False
+    ) -> list[str]:
+        """Candidate parents of an entity, most trusted first.
+
+        ``parent organization`` (P749) is taken as is. ``owned by`` (P127) is
+        only used when it names exactly one owner with a majority or unstated
+        stake, and that owner is not a person: a company with several owners is
+        a widely held one (Caterpillar's holders are Vanguard, BlackRock...), and
+        a founder holding shares (Terry Gou in Foxconn) is not a parent company.
+        """
+        parents = _statement_ids(claims, "P749", include_ended)
+        if parents:
+            return parents
+        owners = list(
+            dict.fromkeys(
+                _statement_ids(claims, "P127", include_ended, _MIN_OWNER_SHARE)
+            )
+        )
+        if len(owners) != 1 or self._is_human(owners[0]):
+            return []
+        return owners
+
+    def _is_human(self, qid: str) -> bool:
+        claims = self._fetch(
+            {"action": "wbgetclaims", "entity": qid, "property": "P31"}
+        )["claims"]
+        return _HUMAN in _statement_ids(claims, "P31", include_ended=True)
+
     def _owner_of(self, qid: str, labels: dict[str, str], language: str) -> str | None:
         """The labelled owner of ``qid``, preferring current over ended statements.
 
@@ -199,11 +251,7 @@ class WikidataClient:
             {"action": "wbgetentities", "ids": qid, "props": "claims"}
         )["entities"][qid].get("claims", {})
         for include_ended in (False, True):
-            ids = [
-                i
-                for prop in _PARENT_PROPS
-                for i in _statement_ids(claims, prop, include_ended)
-            ]
+            ids = self._owner_ids(claims, include_ended)
             labels.update(self._labels(ids, language))
             owner = next((i for i in ids if i in labels), None)
             if owner is not None:

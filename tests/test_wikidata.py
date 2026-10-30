@@ -1,5 +1,6 @@
 import os
 import urllib.error
+import urllib.request
 from email.message import Message
 from typing import Any
 
@@ -31,6 +32,8 @@ def fake_wikidata(
     def fetch(params: dict[str, str]) -> dict[str, Any]:
         if params["action"] == "wbsearchentities":
             return {"search": hits}
+        if params["action"] == "wbgetclaims":
+            return {"claims": {"P31": claims.get(params["entity"], {}).get("P31", [])}}
         ids = params["ids"].split("|")
         if params["props"] == "claims":
             return {"entities": {i: {"claims": claims.get(i, {})} for i in ids}}
@@ -48,11 +51,19 @@ def hit(qid: str, label: str) -> dict[str, Any]:
     return {"id": qid, "label": label, "match": {"type": "label", "text": label}}
 
 
-# Shaped like the real data: YouTube has no P749, only P127 (owned by), and its
-# first owner has no English label; Beats has P749 pointing at Apple.
+# Shaped like the real data: YouTube has no P749, only P127 (owned by), with one
+# ended owner and Google as the single current one; Beats has P749 pointing at
+# Apple.
 YOUTUBE = fake_wikidata(
     [hit("Q866", "YouTube")],
-    {"Q866": {"P127": [statement("Q112247183"), statement("Q95")]}},
+    {
+        "Q866": {
+            "P127": [
+                statement("Q112247183", qualifiers={"P582": [{}]}),
+                statement("Q95", qualifiers={"P580": [{}]}),
+            ]
+        }
+    },
     {"Q95": "Google"},
 )
 BEATS = fake_wikidata(
@@ -104,6 +115,68 @@ def test_search_hit_below_threshold_is_unresolved():
         [hit("Q1", "Zyxwv Holdings")], {"Q1": {"P749": [statement("Q2")]}}, {}
     )
     assert WikidataClient(fetch=fetch).lookup("YouTube") is None
+
+
+def stake(fraction: float) -> dict[str, Any]:
+    """A proportion (P1107) qualifier, as Wikidata stores it."""
+    return {"P1107": [{"datavalue": {"value": {"amount": f"+{fraction}"}}}]}
+
+
+def parent_of(name: str, claims: dict[str, dict[str, Any]], labels: dict[str, str]):
+    fetch = fake_wikidata([hit("Q1", name)], {"Q1": {"P159": []}, **claims}, labels)
+    match = WikidataClient(fetch=fetch).lookup(name)
+    assert match is not None
+    return match.entity.parent_company
+
+
+def test_minority_shareholders_are_not_parents():
+    # Shaped like Caterpillar: only 6-9% holders, all of them investment firms.
+    owners = [
+        statement("Q10", qualifiers=stake(0.0867)),
+        statement("Q11", qualifiers=stake(0.081)),
+    ]
+    labels = {"Q10": "The Vanguard Group", "Q11": "State Street"}
+    assert parent_of("Caterpillar", {"Q1": {"P127": owners}}, labels) is None
+
+
+def test_several_unqualified_owners_are_ambiguous():
+    # Shaped like Foxconn: two owners and nothing to say which one controls it.
+    owners = [statement("Q10"), statement("Q11")]
+    labels = {"Q10": "Some Founder", "Q11": "The Vanguard Group"}
+    assert parent_of("Foxconn", {"Q1": {"P127": owners}}, labels) is None
+
+
+def test_a_person_is_never_the_parent():
+    human = {"P31": [statement("Q5")]}
+    claims = {"Q1": {"P127": [statement("Q10")]}, "Q10": human}
+    assert parent_of("Spanx", claims, {"Q10": "Sara Blakely"}) is None
+
+
+def test_majority_owner_is_the_parent():
+    claims = {"Q1": {"P127": [statement("Q10", qualifiers=stake(0.72))]}}
+    assert parent_of("Acme Works", claims, {"Q10": "Acme Holdings"}) == "Acme Holdings"
+
+
+def test_parent_organization_beats_owned_by():
+    claims = {"Q1": {"P749": [statement("Q10")], "P127": [statement("Q11")]}}
+    labels = {"Q10": "Real Parent", "Q11": "Other Owner"}
+    assert parent_of("Acme Works", claims, labels) == "Real Parent"
+
+
+def test_error_body_with_http_200_raises_unavailable(monkeypatch):
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, *args):
+            return b'{"error": {"code": "ratelimited", "info": "slow down"}}'
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: Reply())
+    with pytest.raises(WikidataUnavailable, match="ratelimited"):
+        WikidataClient().lookup("YouTube")
 
 
 def test_parent_that_is_the_entitys_own_wrapper_is_skipped():
