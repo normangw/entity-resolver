@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Entity Resolver: Final Project Deliverable 2</title>
+<style>
+  @page { size: 11in 8.5in; margin: 0.45in; }
+  * { box-sizing: border-box; }
+  body { font: 11px/1.4 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #1c2330; margin: 0; }
+  .page { page-break-after: always; height: 7.55in; }
+  .page:last-child { page-break-after: auto; }
+  h1 { font-size: 21px; margin: 0 0 2px; }
+  h2 { font-size: 15px; margin: 0 0 6px; }
+  .meta { color: #444; margin-bottom: 8px; }
+  .meta b { color: #000; }
+  .ph { background: #fff3c4; padding: 0 3px; border-radius: 3px; }
+  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .col { border: 1.5px solid #2457c5; border-radius: 8px; overflow: hidden; }
+  .col > h3 { margin: 0; padding: 6px 10px; background: #2457c5; color: #fff; font-size: 13px; }
+  .col section { padding: 6px 10px; border-top: 1px solid #dfe3ea; }
+  .col section h4 { margin: 0 0 2px; font-size: 11px; color: #2457c5; text-transform: uppercase; letter-spacing: .04em; }
+  ul { margin: 0; padding-left: 14px; }
+  li { margin: 1px 0; }
+  code { font-family: Menlo, monospace; font-size: 10px; background: #eef1f6; padding: 0 3px; border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; font-size: 10.5px; margin-top: 4px; }
+  th, td { border: 1px solid #cfd5df; padding: 3px 6px; text-align: left; vertical-align: top; }
+  th { background: #eef1f6; }
+  svg text { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+</style></head><body>
+
+<!-- ======================= PAGE 1: SOLUTION ARCHITECTURE ======================= -->
+<div class="page">
+  <h1>Entity Resolver: Solution Architecture</h1>
+  <div class="meta">
+    <b>DSAN 6700 Final Project, Deliverable 2 (Midpoint Check-in)</b><br>
+    Team: <span class="ph">[team member names]</span><br>
+    Application on Jetstream2: <span class="ph">http://[instance public IP]:8000/</span> &nbsp;·&nbsp;
+    GitHub: <b>https://github.com/normangw/entity-resolver</b>
+  </div>
+  <p style="margin:0 0 8px"><b>Problem.</b> The same company appears under many names across datasets
+  ("Wal-Mart Stores Inc.", "沃尔玛", "Walmart"), so tables cannot be joined or deduplicated.
+  The service maps a messy or non-English company name, or a whole spreadsheet column of them,
+  to one canonical company with its Wikidata ID, parent and headquarters, and says plainly when it is not sure.</p>
+
+  <div class="cols">
+    <div class="col"><h3>Process: use cases</h3>
+      <section><h4>Application build</h4><ul>
+        <li>Build the alias index from Wikidata (<code>scripts/build_index.py</code>): about 14k listed companies with multilingual aliases</li>
+        <li>Build the labeled evaluation set (<code>make_eval_set.py</code>, 176 queries)</li>
+        <li>Package as a Docker image; deploy with Compose</li></ul></section>
+      <section><h4>Application use</h4><ul>
+        <li>Type one name, pick region, see the canonical company, confidence and source</li>
+        <li>Upload an .xlsx / .xls / .csv, pick the sheet and the company-name column, pick a country or region</li>
+        <li>Review summary and integrity checks, download the file with the original rows plus resolver columns</li>
+        <li>Call <code>POST /resolve</code> directly from code</li></ul></section>
+      <section><h4>Application monitoring</h4><ul>
+        <li><code>/health</code> (process up) and <code>/ready</code> (index loaded)</li>
+        <li>Docker health check; <code>restart: unless-stopped</code></li>
+        <li><code>scripts/evaluate.py</code> accuracy report; <code>scripts/bench.py</code> latency</li></ul></section>
+    </div>
+
+    <div class="col"><h3>Execution: API and functionality</h3>
+      <section><h4>Frontend</h4><ul>
+        <li>One static page served by the API at <code>GET /</code>: name form with example chips, and a spreadsheet panel with sheet, header, column and region pickers, a preview table, progress, checks and download</li></ul></section>
+      <section><h4>Exposed API (FastAPI, documented at <code>/docs</code>)</h4><ul>
+        <li><code>GET /health</code>, <code>GET /ready</code></li>
+        <li><code>POST /resolve</code></li>
+        <li><code>POST /upload</code>, <code>GET /upload/{id}/preview</code>, <code>POST /upload/{id}/resolve</code>, <code>GET /upload/{id}/status</code>, <code>GET /upload/{id}/download</code></li></ul></section>
+      <section><h4>Backend logic (not exposed)</h4><ul>
+        <li>Normalize: Unicode NFKC, accent folding, lowercase, legal-suffix removal</li>
+        <li>Score with RapidFuzz <code>WRatio</code> against all aliases, limited to the chosen region; below threshold 0.8 the answer is <code>unresolved</code></li>
+        <li>Low-confidence matches get a GLEIF legal-name check (budgeted, off by default)</li>
+        <li>Upload jobs: safe file reading, one lookup per unique name, write result, read it back and verify</li></ul></section>
+      <section><h4>Baseline and measurement</h4><ul>
+        <li>Baseline: exact match on the normalized alias, 79.9% accuracy on 176 labeled queries; the fuzzy scorer reaches 95.8% (<code>eval/README.md</code>)</li></ul></section>
+    </div>
+
+    <div class="col"><h3>State: what persists, and where</h3>
+      <section><h4>Source control</h4><ul>
+        <li>GitHub repo, <code>main</code> plus feature branches merged by pull request; GitHub Actions CI runs tests and lint</li></ul></section>
+      <section><h4>Data storage</h4><ul>
+        <li>Alias index <code>companies.json</code>: versioned with the code, copied into the named Docker volume <code>alias-index</code></li>
+        <li>No database and no user accounts. Uploaded files and results sit in a temporary directory and are deleted one hour after upload; cell contents are never logged</li></ul></section>
+      <section><h4>Models and configuration</h4><ul>
+        <li>The "model" is the alias index plus the scorer settings; update by editing the index and rebuilding the image, roll back with a git revert and rebuild</li>
+        <li>All settings come from environment variables (<code>.env</code>, never baked into the image): threshold, GLEIF switch, upload limits</li></ul></section>
+      <section><h4>Temporary and cached</h4><ul>
+        <li>Alias index held in memory after startup</li>
+        <li>In-memory table of upload jobs and progress</li>
+        <li>GLEIF daily request counter (in memory)</li></ul></section>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= PAGE 2: TECHNICAL ARCHITECTURE ======================= -->
+<div class="page">
+  <h1>Entity Resolver: Technical Architecture</h1>
+  <div class="meta">Programmatic flow between components, deployed with Docker and Compose on a Jetstream2 instance. Only port 8000 is published.</div>
+  <svg viewBox="0 0 1000 520" width="100%" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#2457c5"/></marker></defs>
+    <style>.box{fill:#fff;stroke:#2457c5;stroke-width:1.6}.t{font-size:13px;font-weight:700;fill:#1c2330}.s{font-size:11px;fill:#444}.l{font-size:10.5px;fill:#2457c5;font-weight:600}
+      .grp{fill:#f4f7fd;stroke:#9db4e6;stroke-width:1.4;stroke-dasharray:6 4}.ext{fill:#f6f7f9;stroke:#8a93a3;stroke-width:1.4}.ln{stroke:#2457c5;stroke-width:1.8;fill:none;marker-end:url(#a)}</style>
+
+    <rect class="grp" x="170" y="14" width="800" height="492" rx="12"/>
+    <text class="s" x="184" y="34" font-weight="700">Jetstream2 instance (Docker Compose, service "api", published port 8000)</text>
+    <rect class="grp" x="186" y="46" width="768" height="446" rx="10" style="stroke-dasharray:none;fill:#fbfcff"/>
+    <text class="s" x="200" y="64" font-weight="700">Container: FastAPI + Uvicorn (Python 3.12, non-root user)</text>
+
+    <!-- user -->
+    <rect class="ext" x="10" y="200" width="140" height="80" rx="8"/>
+    <text class="t" x="80" y="230" text-anchor="middle">User</text>
+    <text class="s" x="80" y="248" text-anchor="middle">browser or curl</text>
+    <text class="s" x="80" y="263" text-anchor="middle">http://IP:8000</text>
+
+    <!-- frontend -->
+    <rect class="box" x="210" y="80" width="200" height="74" rx="8"/>
+    <text class="t" x="310" y="104" text-anchor="middle">Web UI (static HTML)</text>
+    <text class="s" x="310" y="122" text-anchor="middle">GET /  ·  name form</text>
+    <text class="s" x="310" y="137" text-anchor="middle">spreadsheet upload panel</text>
+
+    <!-- api -->
+    <rect class="box" x="210" y="200" width="200" height="86" rx="8"/>
+    <text class="t" x="310" y="224" text-anchor="middle">API layer (FastAPI)</text>
+    <text class="s" x="310" y="242" text-anchor="middle">/resolve  /upload/*</text>
+    <text class="s" x="310" y="257" text-anchor="middle">/health  /ready  /docs</text>
+    <text class="s" x="310" y="272" text-anchor="middle">pydantic validation, settings</text>
+
+    <!-- upload pipeline -->
+    <rect class="box" x="480" y="80" width="220" height="130" rx="8"/>
+    <text class="t" x="590" y="104" text-anchor="middle">Upload pipeline</text>
+    <text class="s" x="590" y="124" text-anchor="middle">1 check file bytes, size, zip, macros</text>
+    <text class="s" x="590" y="140" text-anchor="middle">2 read sheet and column (no formulas)</text>
+    <text class="s" x="590" y="156" text-anchor="middle">3 resolve each unique name</text>
+    <text class="s" x="590" y="172" text-anchor="middle">4 write original rows + results</text>
+    <text class="s" x="590" y="188" text-anchor="middle">5 read back and verify integrity</text>
+
+    <!-- resolver -->
+    <rect class="box" x="480" y="250" width="220" height="100" rx="8"/>
+    <text class="t" x="590" y="274" text-anchor="middle">Model: Resolver (in-process)</text>
+    <text class="s" x="590" y="293" text-anchor="middle">normalize → RapidFuzz WRatio</text>
+    <text class="s" x="590" y="308" text-anchor="middle">region filter, threshold 0.8</text>
+    <text class="s" x="590" y="323" text-anchor="middle">runs in a worker thread</text>
+    <text class="s" x="590" y="338" text-anchor="middle">(event loop stays free)</text>
+
+    <!-- gleif client -->
+    <rect class="box" x="480" y="390" width="220" height="64" rx="8"/>
+    <text class="t" x="590" y="414" text-anchor="middle">GLEIF tiebreak (optional)</text>
+    <text class="s" x="590" y="432" text-anchor="middle">low-confidence matches only,</text>
+    <text class="s" x="590" y="446" text-anchor="middle">daily budget, timeout</text>
+
+    <!-- storage -->
+    <rect class="box" x="750" y="250" width="190" height="100" rx="8"/>
+    <text class="t" x="845" y="274" text-anchor="middle">Volume: alias-index</text>
+    <text class="s" x="845" y="293" text-anchor="middle">companies.json (alias index)</text>
+    <text class="s" x="845" y="308" text-anchor="middle">loaded once at startup,</text>
+    <text class="s" x="845" y="323" text-anchor="middle">held in memory</text>
+
+    <rect class="box" x="750" y="100" width="190" height="90" rx="8"/>
+    <text class="t" x="845" y="124" text-anchor="middle">Temp files</text>
+    <text class="s" x="845" y="143" text-anchor="middle">uploads and results,</text>
+    <text class="s" x="845" y="158" text-anchor="middle">deleted after 1 hour</text>
+    <text class="s" x="845" y="173" text-anchor="middle">(no database)</text>
+
+    <!-- config -->
+    <rect class="box" x="210" y="390" width="200" height="64" rx="8"/>
+    <text class="t" x="310" y="414" text-anchor="middle">Configuration</text>
+    <text class="s" x="310" y="432" text-anchor="middle">.env / environment variables</text>
+    <text class="s" x="310" y="446" text-anchor="middle">(never baked into the image)</text>
+
+    <!-- external -->
+    <rect class="ext" x="750" y="400" width="190" height="54" rx="8"/>
+    <text class="t" x="845" y="424" text-anchor="middle">GLEIF public API</text>
+    <text class="s" x="845" y="441" text-anchor="middle">external, HTTPS</text>
+
+    <!-- arrows -->
+    <path class="ln" d="M150,240 L208,240"/><text class="l" x="158" y="232">HTTP</text>
+    <path class="ln" d="M310,200 L310,156"/><text class="l" x="318" y="182">serves</text>
+    <path class="ln" d="M410,230 L478,160"/><text class="l" x="420" y="180">upload</text>
+    <path class="ln" d="M410,256 L478,290"/><text class="l" x="418" y="283">/resolve</text>
+    <path class="ln" d="M590,210 L590,248"/><text class="l" x="598" y="234">per name</text>
+    <path class="ln" d="M590,350 L590,388"/><text class="l" x="598" y="374">if unsure</text>
+    <path class="ln" d="M700,300 L748,300"/><text class="l" x="704" y="292">index</text>
+    <path class="ln" d="M700,140 L748,140"/><text class="l" x="706" y="132">files</text>
+    <path class="ln" d="M700,422 L748,426"/>
+    <path class="ln" d="M310,390 L310,288"/><text class="l" x="318" y="345">settings</text>
+  </svg>
+
+  <table>
+    <tr><th>Layer</th><th>Technology</th><th>Notes</th></tr>
+    <tr><td>Frontend</td><td>One static HTML page served by the API</td><td>No separate app; loads nothing from the internet</td></tr>
+    <tr><td>API</td><td>FastAPI, Uvicorn, pydantic, python-multipart</td><td>OpenAPI docs at <code>/docs</code>; startup load is non-blocking, so <code>/health</code> answers while <code>/ready</code> is 503</td></tr>
+    <tr><td>Model service</td><td>RapidFuzz scorer in the API process</td><td>About 1.3 ms per name, no GPU, so a second container would only add a network hop</td></tr>
+    <tr><td>Storage</td><td>JSON alias index in a Docker volume; temp directory for uploads</td><td>No database or vector store yet, so there is no second port to protect</td></tr>
+    <tr><td>Deployment</td><td>Docker image (uv, non-root), Compose, Jetstream2</td><td>Only 8000 is published; <code>restart: unless-stopped</code></td></tr>
+  </table>
+</div>
+</body></html>
