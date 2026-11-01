@@ -1,0 +1,176 @@
+{"query": "Wal-Mart Stores, Inc.", "expected": "Q483551", "category": "variant"}
+{"query": "MICROSOFT CORPORATION", "expected": "Q2283", "category": "variant"}
+{"query": "Apple Computer", "expected": "Q312", "category": "variant"}
+{"query": "Alphabet Incorporated", "expected": "Q20800404", "category": "variant"}
+{"query": "Amazon.com, Inc.", "expected": "Q3884", "category": "variant"}
+{"query": "Tesla Motors", "expected": "Q478214", "category": "variant"}
+{"query": "NVIDIA Corp", "expected": "Q182477", "category": "variant"}
+{"query": "The Coca-Cola Co.", "expected": "Q3295867", "category": "variant"}
+{"query": "Pepsico Inc", "expected": "Q334800", "category": "variant"}
+{"query": "The Boeing Company", "expected": "Q66", "category": "variant"}
+{"query": "Ford Motor Co", "expected": "Q44294", "category": "variant"}
+{"query": "Intel Corporation", "expected": "Q248", "category": "variant"}
+{"query": "JP Morgan Chase & Co", "expected": "Q192314", "category": "variant"}
+{"query": "Toyota Motor Corp.", "expected": "Q53268", "category": "variant"}
+{"query": "Sony Corp", "expected": "Q41187", "category": "variant"}
+{"query": "Honda Motor Co., Ltd.", "expected": "Q9584", "category": "variant"}
+{"query": "Nintendo Co Ltd", "expected": "Q8093", "category": "variant"}
+{"query": "Volkswagen AG", "expected": "Q156578", "category": "variant"}
+{"query": "Siemens AG", "expected": "Q81230", "category": "variant"}
+{"query": "Deutsche Bank AG", "expected": "Q66048", "category": "variant"}
+{"query": "Bayerische Motoren Werke", "expected": "Q26678", "category": "variant"}
+{"query": "SAP SE", "expected": "Q552581", "category": "variant"}
+{"query": "Nestle S.A.", "expected": "Q160746", "category": "variant"}
+{"query": "Novartis AG", "expected": "Q507154", "category": "variant"}
+{"query": "Samsung Electronics Co., Ltd.", "expected": "Q20718", "category": "variant"}
+{"query": "Tencent Holdings Ltd", "expected": "Q860580", "category": "variant"}
+{"query": "Alibaba Group Holding Limited", "expected": "Q1359568", "category": "variant"}
+{"query": "Royal Dutch Shell", "expected": "Q154950", "category": "variant"}
+{"query": "HSBC Holdings plc", "expected": "Q190464", "category": "variant"}
+{"query": "BP p.l.c.", "expected": "Q152057", "category": "variant"}
+{"query": "Unilever PLC", "expected": "Q157062", "category": "variant"}
+{"query": "LVMH Moet Hennessy Louis Vuitton", "expected": "Q504998", "category": "variant"}
+{"query": "TotalEnergies SE", "expected": "Q154037", "category": "variant"}
+{"query": "Airbus SE", "expected": "Q2311", "category": "variant"}
+{"query": "Reliance Industries Limited", "expected": "Q908931", "category": "variant"}
+{"query": "Tata Consultancy Services Ltd", "expected": "Q13227919", "category": "variant"}
+{"query": "Royal Bank of Canada", "expected": "Q735261", "category": "variant"}
+{"query": "BHP Group Limited", "expected": "Q625713", "category": "variant"}
+{"query": "Petrobras", "expected": "Q210047", "category": "variant"}
+{"query": "Aatri SA", "expected": "Q753684", "category": "typo"}
+{"query": "Micrron Technology", "expected": "Q1197548", "category": "typo"}
+{"query": "Worthington Industres", "expected": "Q2594130", "category": "typo"}
+{"query": "CoStar Gruop", "expected": "Q16988748", "category": "typo"}
+{"query": "Vittoria Assiccurazioni", "expected": "Q4015203", "category": "typo"}
+{"query": "Petchsrivichai EEnterprise", "expected": "Q139353100", "category": "typo"}
+{"query": "Fuji OOZX IInc.", "expected": "Q11333102", "category": "typo"}
+{"query": "Parsin Bank", "expected": "Q2410404", "category": "typo"}
+{"query": "Xiwang pSecial Steel Company Limited", "expected": "Q17065314", "category": "typo"}
+{"query": "Regal CCorporation", "expected": "Q11348720", "category": "typo"}
+{"query": "AuRio Gold", "expected": "Q4818932", "category": "typo"}
+{"query": "John  Wood Group plc", "expected": "Q915496", "category": "typo"}
+{"query": "OAT AAgrio", "expected": "Q11433934", "category": "typo"}
+{"query": "Rebl  Group", "expected": "Q7259893", "category": "typo"}
+{"query": "Maidenofrm", "expected": "Q6735419", "category": "typo"}
+{"query": "International Mael Company", "expected": "Q10303178", "category": "typo"}
+{"query": "Nishiakwa Rubber", "expected": "Q11628046", "category": "typo"}
+{"query": "On Holdinng AG", "expected": "Q114422270", "category": "typo"}
+{"query": "OM XHelsinki Cap", "expected": "Q140443243", "category": "typo"}
+{"query": "Gresham Technologiees plc", "expected": "Q24884088", "category": "typo"}
+{"query": "Thai Indusstrial Fund 1", "expected": "Q139355473", "category": "typo"}
+{"query": "Reinsurnce Group of America", "expected": "Q1793182", "category": "typo"}
+{"query": "Trackr Fund of Hong Kong", "expected": "Q7831552", "category": "typo"}
+{"query": "China TTower", "expected": "Q52704225", "category": "typo"}
+{"query": "Linekkong", "expected": "Q21192330", "category": "typo"}
+{"query": "StepanC ompany", "expected": "Q3208192", "category": "typo"}
+{"query": "Post and Telecommnuication Equipment JSC", "expected": "Q141253190", "category": "typo"}
+{"query": "Neoc Insurance Co. Ltd.", "expected": "Q96112647", "category": "typo"}
+{"query": "Dialog Grou pBerhad", "expected": "Q139387628", "category": "typo"}
+{"query": "Air aCnada", "expected": "Q185339", "category": "typo"}
+{"query": "MITSUI CHEMICALS INC", "expected": "Q777141", "category": "suffix"}
+{"query": "UNITED MALACCA BERHAD Corp.", "expected": "Q139388214", "category": "suffix"}
+{"query": "CAHAYASAKTI INVESTINDO SUKSES Corp.", "expected": "Q96100169", "category": "suffix"}
+{"query": "GENOMIC HEALTH INC", "expected": "Q28175069", "category": "suffix"}
+{"query": "SK NETWORKS Ltd", "expected": "Q18156239", "category": "suffix"}
+{"query": "MANITOU GROUP Co., Ltd.", "expected": "Q599791", "category": "suffix"}
+{"query": "WAVESTONE Corp.", "expected": "Q3489630", "category": "suffix"}
+{"query": "PEP BOYS Corp.", "expected": "Q3375007", "category": "suffix"}
+{"query": "YASUNAGA INC", "expected": "Q11450904", "category": "suffix"}
+{"query": "BRICK BREWING COMPANY Co., Ltd.", "expected": "Q4965887", "category": "suffix"}
+{"query": "VAROPAKORN Holdings", "expected": "Q139354521", "category": "suffix"}
+{"query": "CENTERRA GOLD Ltd", "expected": "Q3742240", "category": "suffix"}
+{"query": "SINOPAC FINANCIAL HOLDINGS COMPANY LIMITED Ltd", "expected": "Q4855976", "category": "suffix"}
+{"query": "C. MER INDUSTRIES LTD. Holdings", "expected": "Q17068403", "category": "suffix"}
+{"query": "UNIQUE MINING SERVICES Ltd", "expected": "Q139354381", "category": "suffix"}
+{"query": "LANKA GRAPHITE LIMITED Corp.", "expected": "Q28219797", "category": "suffix"}
+{"query": "JAPAN FOODS Co., Ltd.", "expected": "Q11310005", "category": "suffix"}
+{"query": "LOCKHEED MARTIN INC", "expected": "Q7240", "category": "suffix"}
+{"query": "ECHO INVESTMENT Holdings", "expected": "Q19653001", "category": "suffix"}
+{"query": "ACKERSTEIN GROUP Corp.", "expected": "Q115310388", "category": "suffix"}
+{"query": "TRELLEBORG AB INC", "expected": "Q1703203", "category": "suffix"}
+{"query": "BANK MANDIRI INC", "expected": "Q806639", "category": "suffix"}
+{"query": "VEIDEKKE Co., Ltd.", "expected": "Q7918631", "category": "suffix"}
+{"query": "TAILORED BRANDS INC", "expected": "Q3305660", "category": "suffix"}
+{"query": "HOKKO CHEMICAL INDUSTRY Corp.", "expected": "Q11403957", "category": "suffix"}
+{"query": "東和フードサービス", "expected": "Q11526342", "category": "multilingual"}
+{"query": "快乐蜂食品公司", "expected": "Q45208078", "category": "multilingual"}
+{"query": "振華", "expected": "Q695693", "category": "multilingual"}
+{"query": "エアバス・グループ", "expected": "Q2311", "category": "multilingual"}
+{"query": "폴리", "expected": "Q963809", "category": "multilingual"}
+{"query": "コメルツバンク", "expected": "Q157617", "category": "multilingual"}
+{"query": "アツギ", "expected": "Q11283910", "category": "multilingual"}
+{"query": "カルベ・ファルマ", "expected": "Q6351754", "category": "multilingual"}
+{"query": "中國水業集團有限公司", "expected": "Q10874650", "category": "multilingual"}
+{"query": "近畿日本ツーリストグループ", "expected": "Q11228051", "category": "multilingual"}
+{"query": "マーリン・エンターテイメンツグループ", "expected": "Q573278", "category": "multilingual"}
+{"query": "シャルレ", "expected": "Q11307809", "category": "multilingual"}
+{"query": "LG 패션", "expected": "Q12581437", "category": "multilingual"}
+{"query": "APAグループ", "expected": "Q20311412", "category": "multilingual"}
+{"query": "جنكو بيووركس", "expected": "Q29026065", "category": "multilingual"}
+{"query": "HCCインシュアランス・ホールディングス", "expected": "Q5629085", "category": "multilingual"}
+{"query": "株式会社不動テトラ", "expected": "Q11361587", "category": "multilingual"}
+{"query": "プログレッシブ保険", "expected": "Q7248721", "category": "multilingual"}
+{"query": "تاك(مدرسة اعدادية)", "expected": "Q11248001", "category": "multilingual"}
+{"query": "Astro大馬控股有限公司", "expected": "Q3242264", "category": "multilingual"}
+{"query": "جدوى ريت السعودية", "expected": "Q85873405", "category": "multilingual"}
+{"query": "ОАО «Казаньоргсинтез»", "expected": "Q4207929", "category": "multilingual"}
+{"query": "バンクアトランティック", "expected": "Q4855875", "category": "multilingual"}
+{"query": "リージョナル・エクスプレス航空", "expected": "Q788906", "category": "multilingual"}
+{"query": "アストラル・メディア", "expected": "Q750438", "category": "multilingual"}
+{"query": "صناعة الورق", "expected": "Q12188892", "category": "multilingual"}
+{"query": "メディジェン", "expected": "Q101251708", "category": "multilingual"}
+{"query": "エス・サイエンス", "expected": "Q17227819", "category": "multilingual"}
+{"query": "モーダスリンク・グローバル・ソリューションズ", "expected": "Q6889843", "category": "multilingual"}
+{"query": "科興", "expected": "Q3485048", "category": "multilingual"}
+{"query": "sg", "expected": "Q270363", "category": "ambiguous", "region": "eu"}
+{"query": "ca", "expected": "Q600624", "category": "ambiguous", "region": "us"}
+{"query": "apa", "expected": "Q119991", "category": "ambiguous", "region": "us"}
+{"query": "swire pacific", "expected": "Q1141162", "category": "ambiguous", "region": "gb"}
+{"query": "sisco", "expected": "Q7615829", "category": "ambiguous", "region": "us"}
+{"query": "cvc", "expected": "Q157062", "category": "ambiguous", "region": "gb"}
+{"query": "fe", "expected": "Q89100104", "category": "ambiguous", "region": "eu"}
+{"query": "paramount", "expected": "Q76846862", "category": "ambiguous", "region": "us"}
+{"query": "opendoor", "expected": "Q56348814", "category": "ambiguous", "region": "jp"}
+{"query": "kcg", "expected": "Q16980911", "category": "ambiguous", "region": "us"}
+{"query": "stx", "expected": "Q19868261", "category": "ambiguous", "region": "us"}
+{"query": "sunday", "expected": "Q7639364", "category": "ambiguous", "region": "cn"}
+{"query": "世纪互联", "expected": "Q5063092", "category": "ambiguous", "region": "us"}
+{"query": "bird", "expected": "Q55639320", "category": "ambiguous", "region": "us"}
+{"query": "just", "expected": "Q140882591", "category": "ambiguous", "region": "gb"}
+{"query": "新世界", "expected": "Q24834814", "category": "ambiguous", "region": "cn"}
+{"query": "dl", "expected": "Q188920", "category": "ambiguous", "region": "us"}
+{"query": "jll", "expected": "Q1703389", "category": "ambiguous", "region": "us"}
+{"query": "pola", "expected": "Q11339469", "category": "ambiguous", "region": "jp"}
+{"query": "оранж", "expected": "Q1431486", "category": "ambiguous", "region": "eu"}
+{"query": "Cargill", "expected": null, "category": "not_listed"}
+{"query": "Koch Industries", "expected": null, "category": "not_listed"}
+{"query": "Robert Bosch GmbH", "expected": null, "category": "not_listed"}
+{"query": "IKEA", "expected": null, "category": "not_listed"}
+{"query": "Mars, Incorporated", "expected": null, "category": "not_listed"}
+{"query": "Aldi Nord", "expected": null, "category": "not_listed"}
+{"query": "LEGO", "expected": null, "category": "not_listed"}
+{"query": "Rolex", "expected": null, "category": "not_listed"}
+{"query": "Bechtel", "expected": null, "category": "not_listed"}
+{"query": "Fidelity Investments", "expected": null, "category": "not_listed"}
+{"query": "Epic Systems", "expected": null, "category": "not_listed"}
+{"query": "Meijer", "expected": null, "category": "not_listed"}
+{"query": "Mary Kay", "expected": null, "category": "not_listed"}
+{"query": "Hallmark Cards", "expected": null, "category": "not_listed"}
+{"query": "Chick-fil-A", "expected": null, "category": "not_listed"}
+{"query": "Wegmans Food Markets", "expected": null, "category": "not_listed"}
+{"query": "S. C. Johnson & Son", "expected": null, "category": "not_listed"}
+{"query": "Medline Industries", "expected": null, "category": "not_listed"}
+{"query": "Huawei Technologies", "expected": null, "category": "not_listed"}
+{"query": "Dr. August Oetker", "expected": null, "category": "not_listed"}
+{"query": "Mercadona", "expected": null, "category": "not_listed"}
+{"query": "Decathlon", "expected": null, "category": "not_listed"}
+{"query": "Haribo", "expected": null, "category": "not_listed"}
+{"query": "asdfgh qwerty", "expected": null, "category": "not_listed"}
+{"query": "xxxxxxxx", "expected": null, "category": "not_listed"}
+{"query": "123456", "expected": null, "category": "not_listed"}
+{"query": "Lorem Ipsum Dolor", "expected": null, "category": "not_listed"}
+{"query": "The Quick Brown Fox", "expected": null, "category": "not_listed"}
+{"query": "zzyzx holdings", "expected": null, "category": "not_listed"}
+{"query": "Acme Widget Corp of Atlantis", "expected": null, "category": "not_listed"}
+{"query": "blah blah", "expected": null, "category": "not_listed"}
+{"query": "Q", "expected": null, "category": "not_listed"}

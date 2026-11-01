@@ -9,6 +9,7 @@ import json
 import re
 import time
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,6 +80,7 @@ class Entity:
     parent_company: str | None
     headquarters: str | None
     country: str | None = None  # ISO 3166-1 alpha-2, e.g. "US"
+    identifier: str | None = None  # "ticker:exchange", the Capital IQ lookup key
 
 
 @dataclass(frozen=True)
@@ -91,10 +93,15 @@ class Resolver:
     """Fuzzy-matches a company name against every known alias."""
 
     def __init__(
-        self, index_path: Path, threshold: float = 0.8, delay_seconds: float = 0.0
+        self,
+        index_path: Path,
+        threshold: float = 0.8,
+        delay_seconds: float = 0.0,
+        scorer: Callable[..., float] = fuzz.WRatio,
     ) -> None:
         records = json.loads(index_path.read_text(encoding="utf-8"))
         self._threshold = threshold
+        self._scorer = scorer
         self._delay = delay_seconds
         self._choices: list[str] = []
         self._owners: list[Entity] = []
@@ -105,6 +112,7 @@ class Resolver:
                 parent_company=rec.get("parent_company"),
                 headquarters=rec.get("headquarters"),
                 country=rec.get("country"),
+                identifier=rec.get("identifier"),
             )
             for alias in rec["aliases"]:
                 self._choices.append(normalize(alias))
@@ -132,7 +140,7 @@ class Resolver:
         best = process.extractOne(
             normalize(name),
             {i: self._choices[i] for i in rows},
-            scorer=fuzz.WRatio,
+            scorer=self._scorer,
         )
         if best is None:
             return None
@@ -140,3 +148,27 @@ class Resolver:
         if score / 100 < self._threshold:
             return None
         return Match(entity=self._owners[idx], score=round(score / 100, 3))
+
+    def candidates(
+        self, name: str, region: str = "world", min_score: float = 0.0, limit: int = 3
+    ) -> list[Match]:
+        """Closest distinct companies scoring at least ``min_score``, best first."""
+        rows = self._region_rows[region]
+        found = process.extract(
+            normalize(name),
+            {i: self._choices[i] for i in rows},
+            scorer=self._scorer,
+            limit=None,
+            score_cutoff=min_score * 100,
+        )
+        out: list[Match] = []
+        seen: set[str] = set()
+        for _, score, idx in found:
+            entity = self._owners[idx]
+            if entity.wikidata_id in seen:
+                continue
+            seen.add(entity.wikidata_id)
+            out.append(Match(entity=entity, score=round(score / 100, 3)))
+            if len(out) == limit:
+                break
+        return out

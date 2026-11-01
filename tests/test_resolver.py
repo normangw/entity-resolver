@@ -95,3 +95,37 @@ def test_bundled_index_has_countries():
     match = Resolver(INDEX).resolve("Shanghai Airlines", region="cn")
     assert match is not None
     assert match.entity.country == "CN"
+
+
+def test_candidates_are_distinct_companies_best_first(tmp_path):
+    resolver = Resolver(write_index(tmp_path))
+    found = resolver.candidates("Delta", min_score=0.5)
+    assert [m.entity.wikidata_id for m in found] == ["Q1", "Q2"]  # one per company
+    assert found[0].score >= found[1].score
+    assert (
+        resolver.candidates("Delta", region="us", min_score=0.5)[0].entity.country
+        == "US"
+    )
+
+
+def test_scorer_is_configurable(tmp_path):
+    """WRatio accepts a name that merely contains a short alias; ratio does not."""
+    from rapidfuzz import fuzz
+
+    path = tmp_path / "index.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "wikidata_id": "Q9",
+                    "canonical_name": "CyberAgent",
+                    "parent_company": None,
+                    "headquarters": None,
+                    "aliases": ["CyberAgent", "CA"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    assert Resolver(path).resolve("Cargill") is not None  # default WRatio
+    assert Resolver(path, scorer=fuzz.ratio).resolve("Cargill") is None
