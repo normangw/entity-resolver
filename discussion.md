@@ -10,7 +10,7 @@ One request, with `MODEL_DELAY_SECONDS=1`:
 |---|---|---|---|---|
 | Validate the JSON body | event loop | computing | Pydantic `ResolveRequest` | milliseconds |
 | `Resolver.resolve` delay | the event loop in the tagged blocking version; a worker thread after the fix | waiting | `time.sleep`, standing in for the model | 1 s |
-| RapidFuzz `WRatio` over the alias index | that same thread | computing | local `companies.json` | milliseconds |
+| RapidFuzz `ratio` over the alias index | that same thread | computing | local `companies.json` | milliseconds |
 | Build `ResolveResponse` | event loop | computing | the response model | milliseconds |
 
 Ten concurrent `POST /resolve` requests, sent together with `httpx.AsyncClient` and `asyncio.gather` (`uv run python scripts/bench.py`), `MODEL_DELAY_SECONDS=1`. This machine has `cpu_count` 12, so the default pool is `min(32, 12 + 4) = 16` threads.
@@ -27,7 +27,7 @@ The blocking version called `time.sleep` inside `async def`, so the event loop r
 
 **Decision:** the model runs inside the API container, as a library, on the same CPU as the web server. There is no separate model server and no hosted API.
 
-The "model" is a RapidFuzz scorer (`fuzz.WRatio`) over a small alias index (`companies.json`). It is loaded once at startup (`lifespan` in `main.py`) and every request reuses it. It needs no GPU and no weights download.
+The "model" is a RapidFuzz scorer (`fuzz.ratio`) over a small alias index (`companies.json`). It is loaded once at startup (`lifespan` in `main.py`) and every request reuses it. It needs no GPU and no weights download.
 
 ## Options considered
 

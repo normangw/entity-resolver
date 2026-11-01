@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     wikidata_timeout: int = Field(default=10, gt=0)
 
     alias_index_path: FilePath = _DEFAULT_INDEX
-    match_threshold: float = Field(default=0.8, ge=0, le=1)
+    match_threshold: float = Field(default=0.9, ge=0, le=1)
     model_delay_seconds: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
     # GLEIF tiebreak for low-confidence matches. Off by default: enabling it makes
