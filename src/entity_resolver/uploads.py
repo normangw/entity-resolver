@@ -199,7 +199,7 @@ def _expected(value: Any, kind: str) -> str:
 
 
 def verify_output(
-    path: Path, out_kind: str, table: Table, statuses: list[str]
+    path: Path, out_kind: tabular.Kind, table: Table, statuses: list[str]
 ) -> list[Check]:
     """Read the written file back and compare it with the input.
 
@@ -318,7 +318,7 @@ async def process(job: Job, table: Table, resolve: Resolve) -> None:
             counts[statuses[-1]] += 1
             job.done += 1
 
-        out_kind = "csv" if job.kind == "csv" else "xlsx"
+        out_kind: tabular.Kind = "csv" if job.kind == "csv" else "xlsx"
         output = job.dir / f"result.{out_kind}"
         await asyncio.to_thread(
             tabular.write_result,
