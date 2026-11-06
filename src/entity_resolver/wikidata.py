@@ -161,7 +161,7 @@ class WikidataClient:
                 "language": language,
                 "uselang": language,
                 "type": "item",
-                "limit": "3",
+                "limit": "8",
             }
         )["search"]
         wanted = normalize(name)
@@ -178,14 +178,26 @@ class WikidataClient:
             {
                 "action": "wbgetentities",
                 "ids": "|".join(hit["id"] for hit, _ in scored),
-                "props": "claims",
+                "props": "claims|sitelinks",
             }
         )["entities"]
+        # Several companies can share a name ("Siemens AG" also finds Siemens
+        # Limited in India). Take the best score, then the most widely documented
+        # one (most Wikipedia sitelinks), which is almost always the one meant.
+        companies: list[tuple[float, int, dict[str, Any], dict[str, Any]]] = []
         for hit, score in scored:
-            claims = entities[hit["id"]].get("claims", {})
+            entity = entities[hit["id"]]
+            claims = entity.get("claims", {})
             if any(prop in claims for prop in _COMPANY_PROPS):
-                return self._build(hit, claims, score, language)
-        return None
+                links = len(entity.get("sitelinks", {}))
+                companies.append((score, links, hit, claims))
+        if not companies:
+            return None
+        companies.sort(key=lambda c: (c[0], c[1]), reverse=True)
+        score, _, hit, claims = companies[0]
+        ambiguous = any(c[0] == score for c in companies[1:])
+        match = self._build(hit, claims, score, language)
+        return Match(match.entity, match.score, ambiguous=ambiguous)
 
     def _build(
         self, hit: dict[str, Any], claims: dict[str, Any], score: float, language: str

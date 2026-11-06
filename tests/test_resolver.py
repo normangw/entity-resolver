@@ -127,5 +127,56 @@ def test_scorer_is_configurable(tmp_path):
         ),
         encoding="utf-8",
     )
-    assert Resolver(path, scorer=fuzz.WRatio).resolve("Cargill") is not None
-    assert Resolver(path).resolve("Cargill") is None  # the default is ratio
+    assert Resolver(path, scorer=fuzz.WRatio).resolve("Cargill Foods") is not None
+    assert Resolver(path).resolve("Cargill Foods") is None  # the default is ratio
+
+
+def _index(tmp_path: Path, records: list[dict]) -> Path:
+    path = tmp_path / "idx.json"
+    path.write_text(json.dumps(records), encoding="utf-8")
+    return path
+
+
+def _rec(qid: str, name: str, aliases: list[str], parent: str | None = None) -> dict:
+    return {
+        "wikidata_id": qid,
+        "canonical_name": name,
+        "parent_company": parent,
+        "headquarters": None,
+        "country": "US",
+        "aliases": aliases,
+    }
+
+
+def test_short_names_must_match_exactly(tmp_path):
+    resolver = Resolver(_index(tmp_path, [_rec("Q1", "Plexus", ["Plexus"])]))
+    assert resolver.resolve("Lexus") is None  # 0.91 similar, a different company
+    assert resolver.resolve("Plexus") is not None
+
+
+def test_generic_words_do_not_resolve(tmp_path):
+    resolver = Resolver(_index(tmp_path, [_rec("Q1", "Bank", ["Bank"])]))
+    assert resolver.resolve("Bank") is None
+    assert resolver.resolve("Inc.") is None
+
+
+def test_same_name_prefers_top_level_company_and_flags_ambiguity(tmp_path):
+    resolver = Resolver(
+        _index(
+            tmp_path,
+            [
+                _rec("Q1", "Siemens Limited", ["Siemens"], parent="Siemens"),
+                _rec("Q2", "Siemens", ["Siemens AG"]),
+            ],
+        )
+    )
+    match = resolver.resolve("Siemens AG")
+    assert match is not None
+    assert match.entity.canonical_name == "Siemens"
+    assert match.ambiguous
+
+
+def test_unique_match_is_not_ambiguous(tmp_path):
+    resolver = Resolver(_index(tmp_path, [_rec("Q1", "Walmart", ["Walmart"])]))
+    match = resolver.resolve("Walmart")
+    assert match is not None and not match.ambiguous

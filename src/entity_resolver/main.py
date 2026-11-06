@@ -106,6 +106,9 @@ async def ready(request: Request, response: Response) -> ReadyResponse:
     return ReadyResponse(status="ready")
 
 
+_REVIEW_BELOW = 0.95  # scores between the threshold and this are flagged for review
+
+
 async def _escalate(state, resolver: Resolver, name: str, region: str):
     """Ask GLEIF to settle a low-confidence match; None if it cannot."""
     client = state.gleif
@@ -191,6 +194,7 @@ async def resolve_name(
         country=e.country,
         confidence=match.score,
         source=source,
+        needs_review=match.ambiguous or match.score < _REVIEW_BELOW,
     )
 
 
