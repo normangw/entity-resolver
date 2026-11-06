@@ -45,7 +45,10 @@ class ResolveResponse(BaseModel):
     headquarters: str | None
     country: str | None = None
     source: Literal["local", "gleif", "wikidata"] | None = None
+    # confidence is string similarity, not a probability. needs_review is set when
+    # two companies tie or the score is only just over the threshold.
     confidence: float | None
+    needs_review: bool = False
 
 
 class UploadResponse(BaseModel):

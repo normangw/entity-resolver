@@ -35,7 +35,7 @@ def fake_wikidata(
         if params["action"] == "wbgetclaims":
             return {"claims": {"P31": claims.get(params["entity"], {}).get("P31", [])}}
         ids = params["ids"].split("|")
-        if params["props"] == "claims":
+        if params["props"].startswith("claims"):
             return {"entities": {i: {"claims": claims.get(i, {})} for i in ids}}
         return {
             "entities": {
@@ -389,3 +389,23 @@ def test_resolve_endpoint_skips_wikidata_for_a_region_filter(monkeypatch):
         ).json()
     assert data["status"] == "unresolved"
     assert data["source"] is None
+
+
+def test_same_name_prefers_most_documented_company_and_flags_ambiguity():
+    fetch = fake_wikidata(
+        [hit("Q1", "Siemens Limited"), hit("Q2", "Siemens")],
+        {"Q1": {"P159": [statement("Q9")]}, "Q2": {"P159": [statement("Q9")]}},
+        {},
+    )
+
+    def with_sitelinks(params: dict[str, str]) -> dict[str, Any]:
+        out = fetch(params)
+        if params["action"] == "wbgetentities" and params["props"].startswith("claims"):
+            out["entities"]["Q1"]["sitelinks"] = {"enwiki": {}}
+            out["entities"]["Q2"]["sitelinks"] = {f"w{n}": {} for n in range(40)}
+        return out
+
+    match = WikidataClient(threshold=0.9, fetch=with_sitelinks).lookup("Siemens")
+    assert match is not None
+    assert match.entity.wikidata_id == "Q2"
+    assert match.ambiguous
