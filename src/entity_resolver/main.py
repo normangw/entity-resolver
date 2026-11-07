@@ -21,7 +21,7 @@ from entity_resolver.models import (
     UploadRunRequest,
     UploadStatus,
 )
-from entity_resolver.resolver import Resolver
+from entity_resolver.resolver import Resolver, is_generic
 from entity_resolver.wikidata import WikidataClient, WikidataUnavailable
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,12 @@ async def resolve_name(
     source: Literal["local", "wikidata"] = "local"
     wikidata: WikidataClient | None = getattr(state, "wikidata", None)
     # Wikidata hits carry no country, so they cannot honor a region filter.
-    if match is None and wikidata is not None and region == "world":
+    if (
+        match is None
+        and wikidata is not None
+        and region == "world"
+        and not is_generic(name)  # "Bank" or "Inc." would only find an unrelated hit
+    ):
         try:
             match = await asyncio.to_thread(wikidata.lookup, name, language)
         except WikidataUnavailable as exc:

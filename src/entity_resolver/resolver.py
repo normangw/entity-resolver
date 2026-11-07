@@ -83,6 +83,11 @@ def normalize(name: str) -> str:
     return stripped or clean(text)
 
 
+def is_generic(name: str) -> bool:
+    """True for a bare word or legal form that is not a company name ("Bank")."""
+    return normalize(name) in _GENERIC_NAMES
+
+
 @dataclass(frozen=True)
 class Entity:
     wikidata_id: str
@@ -149,7 +154,7 @@ class Resolver:
         if self._delay:
             time.sleep(self._delay)  # stand-in for a slow model; see discussion.md
         query = normalize(name)
-        if query in _GENERIC_NAMES:
+        if is_generic(name):
             return None
         rows = self._region_rows[region]
         found = process.extract(

@@ -409,3 +409,21 @@ def test_same_name_prefers_most_documented_company_and_flags_ambiguity():
     assert match is not None
     assert match.entity.wikidata_id == "Q2"
     assert match.ambiguous
+
+
+def test_generic_word_never_reaches_wikidata():
+    calls: list[str] = []
+
+    class Spy:
+        def lookup(self, name: str, language: str = "en"):
+            calls.append(name)
+
+    with TestClient(app) as client:
+        wait_ready(client)
+        app.state.wikidata = Spy()
+        try:
+            body = client.post("/resolve", json={"company_name": "Bank"}).json()
+        finally:
+            app.state.wikidata = None
+    assert body["status"] == "unresolved"
+    assert calls == []
