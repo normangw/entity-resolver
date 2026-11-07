@@ -203,6 +203,48 @@ async def resolve_name(
     )
 
 
+def _upload_resolver(state, region: str):
+    """A resolve function for upload jobs that survives a busy Wikidata.
+
+    A 503 is retried once. After three rows still failing, names the local index
+    cannot settle are marked ``retry`` at once instead of waiting on Wikidata, so
+    local matches are never lost and the job finishes.
+    """
+    failures = 0
+
+    def retry_row(name: str) -> ResolveResponse:
+        return ResolveResponse(
+            input=name,
+            status="retry",
+            wikidata_id=None,
+            canonical_name=None,
+            parent_company=None,
+            headquarters=None,
+            country=None,
+            confidence=None,
+            source=None,
+        )
+
+    async def resolve_one(name: str) -> ResolveResponse:
+        nonlocal failures
+        if failures >= 3:
+            local = await asyncio.to_thread(state.resolver.resolve, name, region)
+            if local is None:
+                return retry_row(name)
+        for attempt in range(2):
+            try:
+                return await resolve_name(state, name, region)
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+                    raise
+                if attempt == 0:
+                    await asyncio.sleep(1.0)
+        failures += 1
+        return retry_row(name)
+
+    return resolve_one
+
+
 @app.post("/resolve", response_model=ResolveResponse)
 async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
     """Resolve a company name to its canonical entity."""
@@ -282,6 +324,11 @@ async def upload_preview(
         )
     except tabular.UploadError as exc:
         raise _bad_file(exc) from None
+    except Exception:
+        logger.exception("Preview failed")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "This spreadsheet could not be read."
+        ) from None
     return PreviewResponse(columns=labels, rows=rows, suggested_column=suggested)
 
 
@@ -320,9 +367,14 @@ async def upload_resolve(
         )
     except tabular.UploadError as exc:
         raise _bad_file(exc) from None
+    except Exception:
+        logger.exception("Could not load the uploaded table")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "This spreadsheet could not be read."
+        ) from None
     job.state, job.done, job.total = "running", 0, len(table.data)
     job.task = asyncio.create_task(
-        uploads.process(job, table, lambda name: resolve_name(state, name, body.region))
+        uploads.process(job, table, _upload_resolver(state, body.region))
     )
     return _job_status(job)
 

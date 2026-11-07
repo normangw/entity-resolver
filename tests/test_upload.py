@@ -28,6 +28,16 @@ ROWS = [
 ]
 
 
+def wait_done(client, job_id, timeout=15):
+    deadline = time.monotonic() + timeout
+    while True:
+        status = client.get(f"/upload/{job_id}/status").json()
+        if status["state"] in ("done", "error"):
+            return status
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "upload_dir", tmp_path / "uploads")
@@ -105,7 +115,9 @@ def test_xlsx_flow_resolves_and_preserves_every_original_cell(client):
     ws = openpyxl.load_workbook(io.BytesIO(dl.content)).active
     out = [list(r) for r in ws.iter_rows(values_only=True)]
     assert len(out) == len(ROWS)
-    assert out[0] == [*ROWS[0], *tabular.RESULT_COLUMNS]
+    # "Country" already exists in the file, so the resolver's own one is renamed.
+    assert out[0] == [*ROWS[0], *tabular.result_headers(ROWS[0])]
+    assert "Country (2)" in out[0]
     for original, written in zip(ROWS[1:], out[1:], strict=True):
         assert written[:3] == original  # every original cell, row for row
     by_name = {r[0]: r for r in out[1:]}
@@ -301,3 +313,63 @@ def test_resolver_failure_marks_job_error_without_leaking(client, monkeypatch):
     s = run_job(client, meta["id"])
     assert s["state"] == "error"
     assert "secret" not in str(s)
+
+
+def test_gbk_csv_resolves_and_is_noted(client):
+    data = "公司名称,城市\n沃尔玛,本顿维尔\n".encode("gbk")
+    up = client.post("/upload", files={"file": ("g.csv", data, "text/csv")}).json()
+    resp = client.post(
+        f"/upload/{up['id']}/resolve", json={"column": 0, "region": "world"}
+    )
+    assert resp.status_code == 202
+    status = wait_done(client, up["id"])
+    assert status["summary"]["resolved"] == 1
+    assert any("GBK" in n for n in status["summary"]["notes"])
+
+
+def test_truncated_utf16_upload_is_400_not_500(client):
+    data = "Name\nApple\n".encode("utf-16")[:-1]
+    up = client.post("/upload", files={"file": ("u.csv", data, "text/csv")})
+    assert up.status_code in (200, 400)
+    if up.status_code == 200:
+        r = client.get(f"/upload/{up.json()['id']}/preview")
+        assert r.status_code == 400
+
+
+def test_xlsx_result_carries_values_only_note(client):
+    up = client.post("/upload", files={"file": ("a.xlsx", xlsx_bytes(), XLSX)}).json()
+    client.post(f"/upload/{up['id']}/resolve", json={"sheet": "Data", "column": 0})
+    status = wait_done(client, up["id"])
+    assert any("values" in n for n in status["summary"]["notes"])
+
+
+def test_expired_upload_is_gone_without_another_upload(client):
+    up = client.post(
+        "/upload", files={"file": ("a.csv", csv_bytes(), "text/csv")}
+    ).json()
+    client.app.state.jobs.ttl = 0
+    time.sleep(0.01)
+    assert client.get(f"/upload/{up['id']}/download").status_code == 404
+
+
+def test_busy_wikidata_marks_rows_retry_and_keeps_local_matches(client):
+    from entity_resolver import main
+
+    class Down:
+        def lookup(self, name, language="en"):
+            raise main.WikidataUnavailable("down")
+
+    client.app.state.wikidata = Down()
+    try:
+        rows = [["Name"], ["Walmart"], ["Zyxwv Quantum Bakery"], ["Qqqq Zzzz Corp"]]
+        up = client.post(
+            "/upload", files={"file": ("a.csv", csv_bytes(rows), "text/csv")}
+        ).json()
+        client.post(f"/upload/{up['id']}/resolve", json={"column": 0})
+        status = wait_done(client, up["id"], timeout=30)
+    finally:
+        client.app.state.wikidata = None
+    s = status["summary"]
+    assert status["state"] == "done"
+    assert s["resolved"] == 1 and s["retry"] == 2
+    assert any("retry" in n for n in s["notes"])

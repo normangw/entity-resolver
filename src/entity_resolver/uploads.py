@@ -32,7 +32,7 @@ PREVIEW_ROWS = 6
 SAMPLE_ROWS = 8
 _JOB_ID = re.compile(r"[0-9a-f]{32}")
 _NAME_HINTS = ("company", "name", "firm", "organi", "entity", "employer", "customer")
-_STATUSES = {"resolved", "unresolved", "blank", "skipped"}
+_STATUSES = {"resolved", "unresolved", "blank", "skipped", "retry"}
 
 Resolve = Callable[[str], Awaitable[ResolveResponse]]
 
@@ -75,7 +75,13 @@ class JobStore:
         return job
 
     def get(self, job_id: str) -> Job | None:
-        return self._jobs.get(job_id) if _JOB_ID.fullmatch(job_id) else None
+        """The job, or None if unknown or expired (an expired job is deleted now)."""
+        job = self._jobs.get(job_id) if _JOB_ID.fullmatch(job_id) else None
+        if job is not None and job.state != "running":
+            if job.created < time.time() - self.ttl:
+                self.discard(job_id)
+                return None
+        return job
 
     def running(self) -> int:
         return sum(1 for job in self._jobs.values() if job.state == "running")
@@ -114,6 +120,7 @@ class Table:
     data: list[list[Any]]  # data rows only, padded to one width
     column: int  # index of the company-name column
     sheet_title: str
+    notes: tuple[str, ...] = ()  # things the user should know about this file
 
 
 def _sheet_arg(path: Path, kind: tabular.Kind, sheet: str | None) -> str | None:
@@ -165,11 +172,26 @@ def load_table(
         )
     if column >= len(rows[0]):
         raise tabular.UploadError("The chosen column does not exist.")
+    notes: list[str] = []
+    if job.kind == "csv":
+        encoding = tabular.csv_encoding(job.input_path)
+        if encoding != "UTF-8":
+            notes.append(
+                f"This file was read as {encoding}. Check the names in the table "
+                "below; the download is UTF-8."
+            )
+    else:
+        notes.append(
+            "Only the chosen sheet comes back, as values only. Other sheets, "
+            "formulas, formatting, hidden columns and frozen panes are not kept, "
+            "so save the download as a new file."
+        )
     return Table(
         labels=tabular.column_labels(rows, has_header),
         data=data,
         column=column,
         sheet_title=chosen or "Resolved",
+        notes=tuple(notes),
     )
 
 
@@ -208,7 +230,7 @@ def verify_output(
     """
     n = len(table.data)
     width = len(table.labels)
-    out = tabular.read_rows(path, out_kind, None, n + 2)
+    out = tabular.read_rows(path, out_kind, None, n + 2, delimiter=",")
     header, body = (out[0] if out else []), out[1:]
     checks: list[Check] = []
 
@@ -332,6 +354,12 @@ async def process(job: Job, table: Table, resolve: Resolve) -> None:
         checks = await asyncio.to_thread(
             verify_output, output, out_kind, table, statuses
         )
+        notes = list(table.notes)
+        if counts["retry"]:
+            notes.append(
+                f"{counts['retry']} rows could not be looked up because Wikidata was "
+                "busy. They are marked retry; resolve the file again to fill them in."
+            )
         stem = Path(job.filename).stem or "result"
         job.summary = UploadSummary(
             rows=len(table.data),
@@ -340,6 +368,8 @@ async def process(job: Job, table: Table, resolve: Resolve) -> None:
             unresolved=counts["unresolved"],
             blank=counts["blank"],
             skipped=counts["skipped"],
+            retry=counts["retry"],
+            notes=notes,
             from_local=counts["local"],
             from_gleif=counts["gleif"],
             checks=checks,
