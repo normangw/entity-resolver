@@ -320,3 +320,10 @@ def test_index_not_in_openapi_schema():
         paths = client.get("/openapi.json").json()["paths"]
     assert "/" not in paths
     assert "/resolve" in paths
+
+
+def test_unknown_language_is_rejected():
+    with TestClient(app) as client:
+        wait_ready(client)
+        r = client.post("/resolve", json={"company_name": "Walmart", "language": "xx"})
+    assert r.status_code == 422
