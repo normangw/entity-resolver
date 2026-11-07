@@ -28,6 +28,16 @@ _LEADING_ARTICLE = re.compile(r"^the\s+")
 # Dots between single letters ("S.A.", "N.V.") collapse so they match as one token.
 _DOTTED_ABBREV = re.compile(r"(?<=\b\w)\.(?=\w\b)")
 
+# Names this short must match exactly: one changed letter is enough to clear the
+# threshold ("Lexus" vs "Plexus" scores 0.91) and the result is a different company.
+_MIN_FUZZY_LENGTH = 8
+# Inputs that are words or legal forms, not company names. They would otherwise
+# match the first company whose name contains them ("Bank" -> "Bank Aladin Syariah").
+_GENERIC_NAMES = frozenset(
+    "bank banks holding holdings inc corp corporation company co ltd limited llc "
+    "plc group groups stores store the and usa us uk paris london tokyo".split()
+)
+
 # Regions a caller can restrict matching to. "world" means no restriction.
 _EU = frozenset(
     "AT BE BG HR CY CZ DK EE FI FR DE GR HU IE IT LV LT LU MT NL PL PT RO SK SI "
@@ -73,6 +83,11 @@ def normalize(name: str) -> str:
     return stripped or clean(text)
 
 
+def is_generic(name: str) -> bool:
+    """True for a bare word or legal form that is not a company name ("Bank")."""
+    return normalize(name) in _GENERIC_NAMES
+
+
 @dataclass(frozen=True)
 class Entity:
     wikidata_id: str
@@ -87,6 +102,8 @@ class Entity:
 class Match:
     entity: Entity
     score: float  # 0.0 - 1.0
+    # True when a different company scored the same, so the pick is arbitrary.
+    ambiguous: bool = False
 
 
 class Resolver:
@@ -136,18 +153,38 @@ class Resolver:
         """
         if self._delay:
             time.sleep(self._delay)  # stand-in for a slow model; see discussion.md
+        query = normalize(name)
+        if is_generic(name):
+            return None
         rows = self._region_rows[region]
-        best = process.extractOne(
-            normalize(name),
+        found = process.extract(
+            query,
             {i: self._choices[i] for i in rows},
             scorer=self._scorer,
+            limit=None,
+            score_cutoff=self._threshold * 100,
         )
-        if best is None:
+        if not found:
             return None
-        _, score, idx = best
-        if score / 100 < self._threshold:
+        top = found[0][1]
+        # A short name only counts when it matches exactly.
+        if len(query) < _MIN_FUZZY_LENGTH and top < 100:
             return None
-        return Match(entity=self._owners[idx], score=round(score / 100, 3))
+        tied = {
+            self._owners[idx].wikidata_id: idx
+            for _, score, idx in found
+            if score == top
+        }
+        # Same name, several companies: prefer a top-level company over a subsidiary
+        # ("Siemens AG" -> Siemens, not Siemens Limited), then keep index order.
+        ranked = sorted(
+            tied.values(), key=lambda i: self._owners[i].parent_company is not None
+        )
+        return Match(
+            entity=self._owners[ranked[0]],
+            score=round(top / 100, 3),
+            ambiguous=len(tied) > 1,
+        )
 
     def candidates(
         self, name: str, region: str = "world", min_score: float = 0.0, limit: int = 3
