@@ -95,7 +95,9 @@ class Entity:
     parent_company: str | None
     headquarters: str | None
     country: str | None = None  # ISO 3166-1 alpha-2, e.g. "US"
-    identifier: str | None = None  # "ticker:exchange", the Capital IQ lookup key
+    identifier: str | None = (
+        None  # the company's LEI, used only to verify GLEIF candidates
+    )
 
 
 @dataclass(frozen=True)

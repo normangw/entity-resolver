@@ -217,7 +217,7 @@
     return String(s).replace(/[&<>"']/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   }
-  const val = (v) => (v == null || v === "" ? '<span class="none">none</span>' : esc(v));
+  const val = (v, empty) => (v == null || v === "" ? '<span class="none">' + (empty || "none") + "</span>" : esc(v));
 
   for (const ex of EXAMPLES) {
     const b = document.createElement("button");
@@ -253,9 +253,9 @@
     result.innerHTML = '<div class="card resolved"><div class="status">Resolved</div>' +
       "<h2>" + esc(data.canonical_name) + "</h2><dl>" +
       "<dt>Input</dt><dd>" + val(data.input) + "</dd>" +
-      "<dt>Parent company</dt><dd>" + val(data.parent_company) + "</dd>" +
+      "<dt>Parent company</dt><dd>" + val(data.parent_company, "none on record") + "</dd>" +
       "<dt>Headquarters</dt><dd>" + val(data.headquarters) + "</dd>" +
-      "<dt>Country</dt><dd>" + val(data.country) + "</dd>" +
+      "<dt>Country</dt><dd>" + val(data.country, data.source === "wikidata" ? "not available from Wikidata lookup" : "none") + "</dd>" +
       "<dt>Wikidata ID</dt><dd>" + wd + "</dd>" +
       "<dt>Confidence</dt><dd>" + pct + '%<div class="meter"><span style="width:' +
       pct + '%"></span></div></dd>' +
