@@ -128,6 +128,8 @@
           <option value="fr">French (fr)</option>
           <option value="es">Spanish (es)</option>
         </select>
+        <p class="hint">Only changes the translated name, parent and headquarters of
+          companies found on Wikidata. The canonical name is always English.</p>
       </div>
       <div>
         <label for="region">Region</label>
@@ -242,7 +244,9 @@
         "<h2>No confident match for “" + esc(data.input) + "”</h2>" +
         "<p>No company in the index scored above the match threshold" +
         ($("region").value !== "world" ? " within the selected region" : "") +
-        ". Check the spelling, try another variant, or widen the region to World.</p>" +
+        ($("region").value !== "world"
+          ? ". Names outside the local index are only looked up on Wikidata when the region is World, so a company that is not in the index (such as Shanghai Airlines) can be found with World but not with a narrower region. Try World, or check the spelling.</p>"
+          : ". Check the spelling or try another variant.</p>") +
         raw + "</div>";
       return;
     }
@@ -252,7 +256,11 @@
         '" target="_blank" rel="noopener">' + esc(data.wikidata_id) + "</a>"
       : val(null);
     result.innerHTML = '<div class="card resolved"><div class="status">Resolved</div>' +
-      "<h2>" + esc(data.canonical_name) + "</h2><dl>" +
+      "<h2>" + esc(data.canonical_name) + "</h2>" +
+      (data.needs_review
+        ? '<div class="banner bad">Possible match, please review: the score is close to the threshold or more than one company has this name.</div>' : "") +
+      "<dl>" +
+      (data.label ? "<dt>Name in selected language</dt><dd>" + esc(data.label) + "</dd>" : "") +
       "<dt>Input</dt><dd>" + val(data.input) + "</dd>" +
       "<dt>Parent company</dt><dd>" + val(data.parent_company) + "</dd>" +
       "<dt>Headquarters</dt><dd>" + val(data.headquarters) + "</dd>" +
@@ -417,6 +425,8 @@
       '<div class="banner ' + (s.passed ? "ok" : "bad") + '">' +
       (s.passed ? "All " + s.checks.length + " integrity checks passed"
                 : failed + " integrity check(s) failed. Do not rely on this file.") + "</div>" +
+      (s.unresolved && $("uregion").value !== "world"
+        ? '<div class="banner bad">Region is not World, so names outside the local index were not looked up on Wikidata. Try World for the unresolved rows.</div>' : "") +
       (s.notes && s.notes.length
         ? '<div class="banner bad">' + s.notes.map(esc).join("<br>") + "</div>" : "") +
       '<ul class="checks">' + s.checks.map((c) =>
