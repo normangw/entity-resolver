@@ -17,13 +17,15 @@ class ReadyResponse(BaseModel):
 
 
 Region = Literal["world", "us", "cn", "gb", "jp", "eu"]
+# Languages the page offers. Anything else is rejected rather than ignored.
+Language = Literal["en", "zh", "ja", "de", "fr", "es"]
 
 
 class ResolveRequest(BaseModel):
     """Request model for company entity resolution."""
 
     company_name: str = Field(min_length=1, max_length=200)
-    language: str = Field(default="en", pattern=r"^[a-z]{2}$")
+    language: Language = "en"
     region: Region = "world"
 
     @field_validator("company_name")
@@ -40,7 +42,8 @@ class ResolveResponse(BaseModel):
     input: str
     status: str  # "resolved" | "unresolved"
     wikidata_id: str | None
-    canonical_name: str | None
+    canonical_name: str | None  # always the English name, so joins are stable
+    label: str | None = None  # the name in the requested language, when different
     parent_company: str | None
     headquarters: str | None
     country: str | None = None
@@ -107,6 +110,8 @@ class UploadSummary(BaseModel):
     from_gleif: int
     checks: list[Check]
     passed: bool  # every check is ok
+    retry: int = 0  # rows whose lookup was unavailable; resolve again to fill them
+    notes: list[str] = Field(default_factory=list)  # caveats to show the user
     sample: list[SampleRow]
     download_name: str
 

@@ -203,6 +203,11 @@ class WikidataClient:
         self, hit: dict[str, Any], claims: dict[str, Any], score: float, language: str
     ) -> Match:
         name = hit.get("label", hit["id"])
+        canonical = name
+        if language != "en":
+            # canonical_name stays English so one company is one name for joins;
+            # the translated name goes in ``label``.
+            canonical = self._labels([hit["id"]], "en").get(hit["id"], name)
         parent_ids = self._owner_ids(claims)
         hq_ids = _statement_ids(claims, _HQ_PROP)[:1]
         labels = self._labels([*parent_ids, *hq_ids], language)
@@ -217,9 +222,10 @@ class WikidataClient:
             parent_id = None  # only ever found the entity's own wrapper
         entity = Entity(
             wikidata_id=hit["id"],
-            canonical_name=name,
+            canonical_name=canonical,
             parent_company=labels[parent_id] if parent_id else None,
             headquarters=labels.get(hq_ids[0]) if hq_ids else None,
+            label=name if name != canonical else None,
         )
         return Match(entity=entity, score=round(score, 3))
 

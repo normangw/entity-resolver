@@ -427,3 +427,25 @@ def test_generic_word_never_reaches_wikidata():
             app.state.wikidata = None
     assert body["status"] == "unresolved"
     assert calls == []
+
+
+def test_translated_name_goes_in_label_and_canonical_stays_english():
+    claims = {"Q160120": {"P159": [statement("Q9")]}}
+
+    def fetch(params: dict[str, str]) -> dict[str, Any]:
+        if params["action"] == "wbsearchentities":
+            return {"search": [hit("Q160120", "华为")]}
+        if params["props"].startswith("claims"):
+            return {"entities": {"Q160120": {"claims": claims["Q160120"]}}}
+        return {
+            "entities": {
+                "Q160120": {
+                    "labels": {"en": {"value": "Huawei"}, "zh": {"value": "华为"}}
+                }
+            }
+        }
+
+    match = WikidataClient(threshold=0.9, fetch=fetch).lookup("华为", "zh")
+    assert match is not None
+    assert match.entity.canonical_name == "Huawei"
+    assert match.entity.label == "华为"
