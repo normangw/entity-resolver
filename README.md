@@ -279,11 +279,12 @@ curl -X POST http://localhost:8000/resolve \
   "headquarters": "Bentonville, Arkansas, United States",
   "country": "US",
   "confidence": 1.0,
-  "source": "index"
+  "source": "local",
+  "needs_review": false
 }
 ```
 
-`source` is `"index"` for a local match, `"wikidata"` for a fallback match, and null when unresolved.
+This example matches the deployed app: the Jetstream instance runs `main` (earlier README drafts showed a placeholder response with null fields; that was the stage-one stub). `GET /openapi.json` or `/docs` on the running app is always the authoritative schema. `source` is `"local"` for a local match, `"wikidata"` for a fallback match, and null when unresolved.
 
 With `WIKIDATA_FALLBACK=true`, a name that misses the index is looked up on Wikidata, and `parent_company` is read from its `parent organization` statement (`Beats Electronics` resolves to `Apple Inc.`) or, failing that, from an `owned by` statement (`YouTube` to `Google`). `owned by` also records shareholders, so it only counts when it names exactly one owner that holds a majority or an unstated stake and is not a person. A widely held company such as Caterpillar, or a founder-controlled one such as Foxconn, resolves with `parent_company: null`. A parent named like the company itself (`WhatsApp LLC` for WhatsApp) is a legal-entity wrapper and is skipped in favour of its owner. Wikidata hits carry no country, so the fallback is skipped when `region` is not `world`. If Wikidata cannot answer (timeout, or HTTP 429 when it throttles), `/resolve` returns `503` rather than `unresolved`, so an outage is never reported as "no such company". A company Wikidata has no owner for (such as Instagram) resolves with `parent_company: null`.
 
@@ -300,6 +301,20 @@ Names are normalized before scoring, the same way for the query and for every al
 **GLEIF tiebreak.** When `GLEIF_ENABLED=true` and the best local score is below `MATCH_THRESHOLD`, candidates scoring at least `GLEIF_LOW_THRESHOLD` that have an `identifier` (the company's Legal Entity Identifier, LEI) are sent to the public GLEIF API in one request (`GET /lei-records?filter[lei]=...`). GLEIF's name search cannot handle messy input, but lookup by LEI is exact, so it confirms candidates the index proposed instead of finding new ones. The candidate whose GLEIF legal name best matches the query wins if it scores at least `MATCH_THRESHOLD`. Name, country and headquarters in the response still come from Wikidata, because GLEIF's address is often a registered agent's. A timeout, an error or a spent daily budget leaves the result `unresolved`. Only companies that have an LEI on Wikidata (property P1278) can be verified; `scripts/build_index.py` stores it as `identifier` and prints the count as `with_lei`.
 
 A name that scores below `MATCH_THRESHOLD` (and is not settled by the tiebreak) returns `"status": "unresolved"` and null company fields. `language` is validated on the request. Matching uses the alias strings in the index, including non-English aliases such as `上海航空`.
+
+## Design decisions and known limits
+
+Answers to questions raised during user testing (issues #42 to #66).
+
+- **Join key.** Join on `wikidata_id`. It is stable across runs and languages. `canonical_name` is always the English name but can change if Wikidata or the index is rebuilt. The index does not carry a version yet, so keep the file you resolved alongside its results. The stored `identifier` is the company's LEI (used only for the GLEIF tiebreak) and is not returned.
+- **Entity level.** A match is the legal brand most people mean, not always the operating company: `Google LLC` resolves to `Alphabet Inc.` because the index treats the group as the canonical company. `parent_company` is one level up only, and it is `null` both when a company has no parent and when Wikidata has no owner on record, so a blank does not prove independence. Roll-ups across a corporate group need a second pass on `parent_company` and are not built in.
+- **Country.** Local matches carry an ISO country. Wikidata fallback matches do not, so `country` is `null` for them (for example `上海航空`); the page says so.
+- **Corrections.** There is no way to save a correction. Fix a wrong row in your own copy.
+- **History.** Only current names and common aliases are indexed. A former name resolves only if it is an alias or still on Wikidata, and the response does not say whether a company is active or defunct.
+- **Confidential data.** The service is a public demo. Unmatched names are sent to Wikidata (and GLEIF when enabled), and uploads sit on the server for `UPLOAD_TTL_SECONDS`. Do not upload confidential vendor lists.
+- **Size.** Spreadsheets are limited to `UPLOAD_MAX_ROWS` data rows (5,000 by default) and there is no resume: reloading the page loses the upload. Split larger lists.
+- **Evaluation.** `eval/README.md` scores the local index only, on queries that were also used to pick the 0.90 threshold. The live app also answers from Wikidata, so its accuracy on unlisted names is different, and `Instagram` is an example that resolves through Wikidata. Treat the published numbers as a ceiling for the local index, not a guarantee for the whole app. `docs/deliverable2/architecture.html` is the Deliverable 2 snapshot and still describes `WRatio` at 0.8 (95.8%); the current decision is `ratio` at 0.90.
+- **Spreadsheet versus single name.** Both use the same resolver and return the same fields; the spreadsheet adds a row status. Since `canonical_name` is always English, `上海航空` is `Shanghai Airlines` in both (the single-name card also shows the Chinese name as `label`).
 
 ## Concurrency audit
 

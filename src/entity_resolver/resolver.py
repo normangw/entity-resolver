@@ -95,7 +95,7 @@ class Entity:
     parent_company: str | None
     headquarters: str | None
     country: str | None = None  # ISO 3166-1 alpha-2, e.g. "US"
-    identifier: str | None = None  # "ticker:exchange", the Capital IQ lookup key
+    identifier: str | None = None  # the company's LEI, used to verify GLEIF candidates
     label: str | None = None  # name in the requested language, if not English
 
 
