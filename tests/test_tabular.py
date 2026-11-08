@@ -155,3 +155,62 @@ def test_write_result_length_mismatch_raises(tmp_path):
             [["x"], ["y"]],
             [["blank"] + [None] * 7],
         )
+
+
+def test_csv_gbk_is_decoded_not_garbled(tmp_path):
+    p = tmp_path / "gbk.csv"
+    p.write_bytes("公司名称,城市\n沃尔玛,本顿维尔\n".encode("gbk"))
+    assert tabular.read_rows(p, "csv", None, 10) == [
+        ["公司名称", "城市"],
+        ["沃尔玛", "本顿维尔"],
+    ]
+    assert tabular.csv_encoding(p) == "GBK"
+
+
+def test_csv_cp1252_with_accent_is_not_mistaken_for_gbk(tmp_path):
+    p = tmp_path / "w.csv"
+    p.write_bytes("Name\nL'Oréal\nNestlé\n".encode("cp1252"))
+    assert tabular.read_rows(p, "csv", None, 10)[1:] == [["L'Oréal"], ["Nestlé"]]
+    assert tabular.csv_encoding(p) == "Windows-1252"
+
+
+def test_truncated_utf16_is_a_clear_error_not_a_crash(tmp_path):
+    p = tmp_path / "u16.csv"
+    p.write_bytes("Name\nApple\n".encode("utf-16")[:-1])  # odd length: cut mid-char
+    with pytest.raises(tabular.UploadError, match="UTF-16"):
+        tabular.read_rows(p, "csv", None, 10)
+
+
+def test_undecodable_csv_asks_for_utf8(tmp_path):
+    p = tmp_path / "bad.csv"
+    p.write_bytes(b"Name\n\x81\x8d\x8f\x90\x9d\n")  # bytes cp1252 leaves undefined
+    with pytest.raises(tabular.UploadError, match="UTF-8"):
+        tabular.read_rows(p, "csv", None, 10)
+
+
+def test_semicolon_and_tab_delimiters_are_detected(tmp_path):
+    p = tmp_path / "s.csv"
+    p.write_text("Company;Country\nApple;US\n", encoding="utf-8")
+    assert tabular.read_rows(p, "csv", None, 10) == [
+        ["Company", "Country"],
+        ["Apple", "US"],
+    ]
+    p.write_text("Company\tCountry\nApple\tUS\n", encoding="utf-8")
+    assert tabular.read_rows(p, "csv", None, 10)[1] == ["Apple", "US"]
+
+
+def test_single_column_csv_with_commas_in_names_stays_one_column(tmp_path):
+    p = tmp_path / "one.csv"
+    p.write_text('Company\n"Acme, Inc."\n', encoding="utf-8")
+    assert tabular.read_rows(p, "csv", None, 10) == [["Company"], ["Acme, Inc."]]
+
+
+def test_header_whitespace_is_kept():
+    assert tabular.column_labels([[" Name ", None]], True) == [" Name ", "Column B"]
+
+
+def test_result_headers_avoid_existing_column_names():
+    heads = tabular.result_headers(["Name", "Resolver status", "canonical name"])
+    assert heads[0] == "Resolver status (2)"
+    assert heads[1] == "Canonical name (2)"
+    assert len(set(h.lower() for h in heads)) == len(heads)

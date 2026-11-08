@@ -98,14 +98,61 @@ def _check_zip(path: Path) -> None:
         raise UploadError("This .xlsx file expands too much to be accepted.")
 
 
-def _csv_text(path: Path) -> str:
-    raw = path.read_bytes()
+_HIGH_RUN = re.compile(rb"[\x80-\xff]+")
+
+
+def _looks_like_gbk(raw: bytes) -> bool:
+    """True if every run of non-ASCII bytes is whole GB2312 characters.
+
+    GBK text is pairs of bytes both >= 0xA1. Windows-1252 text ("L'Oréal") has a
+    lone high byte next to ASCII, so it fails this test and is not mistaken for GBK.
+    """
+    runs = _HIGH_RUN.findall(raw)
+    return bool(runs) and all(len(run) % 2 == 0 and min(run) >= 0xA1 for run in runs)
+
+
+def decode_csv(raw: bytes) -> tuple[str, str]:
+    """The text of a csv and the name of the encoding it was read as.
+
+    Tries UTF-16 (with a byte-order mark), UTF-8, GBK, then Windows-1252. Never
+    guesses silently with replacement characters: a file that fits none is refused.
+    """
     if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return raw.decode("utf-16")
+        try:
+            return raw.decode("utf-16"), "UTF-16"
+        except UnicodeDecodeError:
+            raise UploadError(
+                "This file looks like UTF-16 but is cut short or damaged. "
+                "Re-save it as a UTF-8 CSV and upload it again."
+            ) from None
     try:
-        return raw.decode("utf-8-sig")
+        return raw.decode("utf-8-sig"), "UTF-8"
     except UnicodeDecodeError:
-        return raw.decode("cp1252", errors="replace")
+        pass
+    if _looks_like_gbk(raw):
+        try:
+            return raw.decode("gb18030"), "GBK"
+        except UnicodeDecodeError:
+            pass
+    try:
+        return raw.decode("cp1252"), "Windows-1252"
+    except UnicodeDecodeError:
+        raise UploadError(
+            "Could not tell which text encoding this file uses. "
+            "Re-save it as a UTF-8 CSV and upload it again."
+        ) from None
+
+
+def csv_encoding(path: Path) -> str:
+    """Name of the encoding a csv file is read as (see ``decode_csv``)."""
+    return decode_csv(path.read_bytes())[1]
+
+
+def _delimiter(text: str) -> str:
+    """The csv delimiter: whichever of , ; tab | is most common in the first line."""
+    first = text.lstrip("\ufeff").split("\n", 1)[0]
+    best = max(",;\t|", key=lambda d: (first.count(d), d == ","))
+    return best if first.count(best) else ","
 
 
 def sheet_names(path: Path, kind: Kind) -> list[str]:
@@ -166,7 +213,13 @@ def _xls_rows(path: Path, sheet: str | None, limit: int) -> Iterator[list[Any]]:
         book.release_resources()
 
 
-def read_rows(path: Path, kind: Kind, sheet: str | None, limit: int) -> list[list[Any]]:
+def read_rows(
+    path: Path,
+    kind: Kind,
+    sheet: str | None,
+    limit: int,
+    delimiter: str | None = None,
+) -> list[list[Any]]:
     """Up to ``limit`` rows of the chosen sheet, padded to a rectangle.
 
     Trailing empty rows are dropped. Row 1 is whatever the file's first row is; the
@@ -175,7 +228,10 @@ def read_rows(path: Path, kind: Kind, sheet: str | None, limit: int) -> list[lis
     rows: list[list[Any]] = []
     try:
         if kind == "csv":
-            reader = csv.reader(io.StringIO(_csv_text(path), newline=""))
+            text = decode_csv(path.read_bytes())[0]
+            reader = csv.reader(
+                io.StringIO(text, newline=""), delimiter=delimiter or _delimiter(text)
+            )
             for i, row in enumerate(reader):
                 if i >= limit:
                     break
@@ -198,6 +254,7 @@ def read_rows(path: Path, kind: Kind, sheet: str | None, limit: int) -> list[lis
         InvalidFileException,
         xlrd.XLRDError,
         csv.Error,
+        UnicodeError,
     ):
         raise UploadError("This spreadsheet could not be read.") from None
     while rows and all(v in (None, "") for v in rows[-1]):
@@ -210,8 +267,8 @@ def column_labels(rows: Sequence[Sequence[Any]], has_header: bool) -> list[str]:
     width = len(rows[0]) if rows else 0
     if has_header and rows:
         return [
-            str(v).strip()
-            if v not in (None, "")
+            str(v)
+            if v is not None and str(v).strip()
             else f"Column {get_column_letter(i + 1)}"
             for i, v in enumerate(rows[0])
         ]
@@ -246,6 +303,20 @@ def neutralize(value: Any) -> Any:
 _XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
+def result_headers(header: Sequence[str]) -> list[str]:
+    """``RESULT_COLUMNS`` renamed where the file already has a column of that name."""
+    taken = {h.strip().lower() for h in header}
+    out: list[str] = []
+    for name in RESULT_COLUMNS:
+        label, n = name, 1
+        while label.lower() in taken:
+            n += 1
+            label = f"{name} ({n})"
+        taken.add(label.lower())
+        out.append(label)
+    return out
+
+
 def write_result(
     path: Path,
     kind: Kind,
@@ -260,7 +331,7 @@ def write_result(
     ``extra`` has one list of ``RESULT_COLUMNS`` values per row. A csv stays a csv; a
     workbook (including .xls, which cannot be written) comes back as .xlsx.
     """
-    head = [*header, *RESULT_COLUMNS]
+    head = [*header, *result_headers(header)]
     if kind == "csv":
         with path.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)

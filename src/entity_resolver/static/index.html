@@ -155,7 +155,8 @@
     <h2>Resolve a spreadsheet</h2>
     <p class="sub">Upload an Excel or CSV file, choose the column that holds company
       names and a region, and download your file back with the resolver&rsquo;s columns
-      added. Your original rows and columns are never changed or removed.</p>
+      added. Your original rows and columns are kept. For Excel files only the sheet you
+      choose comes back, as values only (no other sheets, formulas or formatting).</p>
     <form id="uform" autocomplete="off">
       <label for="file">File (.xlsx, .xls or .csv)</label>
       <input id="file" type="file" accept=".xlsx,.xls,.csv">
@@ -410,11 +411,14 @@
       '<div class="status">' + (s.passed ? "Done" : "Check failed") + "</div>" +
       '<div class="stats">' + stat("rows", s.rows) + stat("resolved", s.resolved) +
       stat("unresolved", s.unresolved) + stat("blank names", s.blank) +
+      (s.retry ? stat("retry later", s.retry) : "") +
       (s.skipped ? stat("skipped (too long)", s.skipped) : "") +
       stat("unique names", s.unique_names) + "</div>" +
       '<div class="banner ' + (s.passed ? "ok" : "bad") + '">' +
       (s.passed ? "All " + s.checks.length + " integrity checks passed"
                 : failed + " integrity check(s) failed. Do not rely on this file.") + "</div>" +
+      (s.notes && s.notes.length
+        ? '<div class="banner bad">' + s.notes.map(esc).join("<br>") + "</div>" : "") +
       '<ul class="checks">' + s.checks.map((c) =>
         "<li><span class=\"" + (c.ok ? "ok" : "bad") + '">' + (c.ok ? "✓" : "✗") + "</span> " +
         esc(c.name) + "<small>" + esc(c.detail) + "</small></li>").join("") + "</ul>" +
