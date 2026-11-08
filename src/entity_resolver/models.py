@@ -110,6 +110,8 @@ class UploadSummary(BaseModel):
     from_gleif: int
     checks: list[Check]
     passed: bool  # every check is ok
+    retry: int = 0  # rows whose lookup was unavailable; resolve again to fill them
+    notes: list[str] = Field(default_factory=list)  # caveats to show the user
     sample: list[SampleRow]
     download_name: str
 
