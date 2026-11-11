@@ -1,6 +1,7 @@
 # Entity Resolver stack.
-# One service: the API. It has no dependencies yet (no database, vector store or
-# cache), so there is nothing else to start and no dependency health condition.
+# Two services: the API and an nginx reverse proxy in front of it. The proxy is the
+# only published port (80); the API is reachable only through it. There is no
+# database, vector store or cache.
 # Start everything on a fresh clone with:  docker compose up -d
 
 services:
@@ -15,10 +16,22 @@ services:
     environment:
       # The alias index lives in the named volume so it survives the container.
       ALIAS_INDEX_PATH: /app/src/entity_resolver/data/companies.json
-    ports:
-      - "8000:8000"
+    # Not published: only the proxy below can reach it, on the compose network.
+    expose:
+      - "8000"
     volumes:
       - alias-index:/app/src/entity_resolver/data
+    restart: unless-stopped
+
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
