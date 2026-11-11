@@ -355,6 +355,7 @@
     const d = await r.json().catch(() => ({}));
     if (typeof d.detail === "string") return d.detail;
     if (Array.isArray(d.detail)) return d.detail.map((x) => x.msg).join("; ");
+    if (r.status === 413) return "This file is too big. The limit is 10 MB and 5,000 rows. Save it as CSV (smaller than Excel) or split it into parts and upload again.";
     return "Request failed (" + r.status + ")";
   }
 
