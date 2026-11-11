@@ -31,7 +31,7 @@ cp .env.example .env
 | `APP_VERSION` | `0.1.0` | Version string |
 | `DEBUG` | `false` | Enable debug mode |
 | `WIKIDATA_TIMEOUT` | `10` | Timeout in seconds for Wikidata requests |
-| `WIKIDATA_FALLBACK` | `false` | When a name is not in the local index, ask Wikidata (resolves subsidiaries such as YouTube or Beats Electronics). Off by default so tests and CI stay offline |
+| `WIKIDATA_FALLBACK` | `true` | When a name is not in the local index, ask Wikidata (resolves subsidiaries such as YouTube or Beats Electronics). The test suite sets it to `false` (see `tests/conftest.py`) so CI stays offline. Set `false` to run fully offline |
 | `WIKIDATA_CACHE_TTL` | `3600` | Seconds to remember a Wikidata answer, including "not found" (0 turns it off). Failures are never cached |
 | `MATCH_THRESHOLD` | `0.9` | Minimum RapidFuzz score, as a fraction, to accept a match |
 | `MODEL_DELAY_SECONDS` | `0` | Seconds `Resolver.resolve` sleeps before scoring. Stands in for a slow model; leave at `0` in normal use |
@@ -84,7 +84,7 @@ Below the single-name form, **Resolve a spreadsheet** takes an `.xlsx`, `.xls` o
 1. Choose the file. The page uploads it (`POST /upload`) and shows the first rows.
 2. Pick the **sheet** (workbooks with several), tick or untick **First row is a header**, pick the **company name column** (the likely one is preselected) and the **region**.
 3. Press **Resolve file**. A progress bar follows the job; each unique name is resolved once.
-4. Read the summary and the integrity checks, then **Download** the result: your original rows and columns, unchanged, with eight columns appended (`Resolver status`, `Canonical name`, `Wikidata ID`, `Parent company`, `Headquarters`, `Country`, `Confidence`, `Source`). A csv comes back as csv; `.xlsx` and `.xls` come back as `.xlsx`.
+4. Read the summary and the integrity checks, then **Download** the result: your original rows and columns, unchanged, with nine columns appended (`Resolver status`, `Canonical name`, `Wikidata ID`, `Parent company`, `Headquarters`, `Country`, `Confidence`, `Source`, `Needs review`). `Needs review` is `yes` on rows to check, and the summary counts them. A job where Wikidata was busy ends **Partly done**, not Done: rows marked `retry` were never looked up (this is not a "no such company" answer), so resolve the file again later. Phone numbers and dashes keep their text; other cells that start with `=`, `+`, `-` or `@` get a leading apostrophe so Excel cannot run them as formulas. A csv comes back as csv; `.xlsx` and `.xls` come back as `.xlsx`.
 
 Row statuses are `resolved`, `unresolved`, `blank` (empty name cell) and `skipped` (name over 200 characters). No row is ever dropped or reordered.
 
@@ -276,11 +276,14 @@ curl -X POST http://localhost:8000/resolve \
   "wikidata_id": "Q483551",
   "canonical_name": "Walmart",
   "parent_company": null,
-  "headquarters": "Bentonville, Arkansas, United States",
+  "headquarters": "Bentonville, United States",
   "country": "US",
   "confidence": 1.0,
   "source": "local",
-  "needs_review": false
+  "needs_review": false,
+  "matched_alias": "Wal-Mart Stores, Inc.",
+  "as_of": "2026-10-25",
+  "note": null
 }
 ```
 
@@ -294,7 +297,9 @@ With `WIKIDATA_FALLBACK=true`, a name that misses the index is looked up on Wiki
 
 Names are normalized before scoring, the same way for the query and for every alias: Unicode NFKC, accent folding (`Nestlé` to `nestle`), lowercasing, `&` to `and`, leading "the", legal suffixes (`Inc`, `GmbH`, `AG`, `S.A.`, `有限公司`, `株式会社` and others) and punctuation removed. If that would leave nothing, the unstripped name is used.
 
-`confidence` is string similarity between the normalized input and the matched name. It is not a probability that the match is right. `needs_review` is `true` when two companies tied on score or the score is under 0.95, so an analyst should check that row. Names shorter than 8 characters (after normalization) must match exactly, and bare words such as `Bank`, `Inc.` or `USA` are never resolved, because one changed letter or a generic word otherwise lands on an unrelated company (`Lexus` on `Plexus`). When several Wikidata companies share a name, the one with the most Wikipedia sitelinks wins and `needs_review` is set.
+`confidence` is name similarity (0 to 1) between the normalized input and the matched name. It is **not** a probability that the match is right: 1.0 means the text matched a known name, not that it is the company you mean, and 0.95 is not "95% likely correct". Local matches use RapidFuzz `ratio`; Wikidata matches use `WRatio`, so scores are comparable within one `source` but not across sources. The page labels it "Name similarity". There is no single cutoff that suits every workflow: treat anything with `needs_review: true`, or any score below 1.0, as a row to check. Sorting by `confidence` is safe within a source; to compare across sources, filter on `source` first. `matched_alias` shows the stored name the input matched, and `as_of` is the date the index was built (local) or the lookup was made (Wikidata), so an answer can be explained later.
+
+Input is checked before matching. Text with fewer than two letters or digits (`T`, `?`, an emoji) and placeholders such as `TBD`, `N/A` or `unknown` are never resolved, and index aliases that normalize to nothing are dropped. If the name as typed does not resolve, the service retries it without brackets and vendor numbers (`Microsoft Corporation (Vendor #4471)`), then without a trailing city and state (`Walmart, Bentonville AR`). For `X d/b/a Y` it tries the text, then X (the legal entity), then Y (the brand), and the first that resolves wins. When several index companies tie on the same name, a top-level company beats a subsidiary, then the lowest Wikidata Q-number wins (older, more notable entities have lower numbers) and `needs_review` is set. `note` explains why a result needs a look when the name is known to have been split or merged. `needs_review` is `true` when two companies tied on score or the score is under 0.95, so an analyst should check that row. Names shorter than 8 characters (after normalization) must match exactly, and bare words such as `Bank`, `Inc.` or `USA` are never resolved, because one changed letter or a generic word otherwise lands on an unrelated company (`Lexus` on `Plexus`). When several Wikidata companies share a name, the one with the most Wikipedia sitelinks wins and `needs_review` is set. Wikidata is always searched in English (25 hits) so the same name finds the same company in every language; `language` only chooses the labels returned. Hits whose `instance of` is a building, university, international organization, government agency, nonprofit or similar class are skipped; the list is not exhaustive, so a non-company can still slip through.
 
 `source` says where the answer came from: `local` (the alias index) or `gleif` (settled by the GLEIF tiebreak).
 
@@ -304,7 +309,14 @@ A name that scores below `MATCH_THRESHOLD` (and is not settled by the tiebreak) 
 
 ## Design decisions and known limits
 
-Answers to questions raised during user testing (issues #42 to #66).
+Answers to questions raised during user testing (issues #42 to #92).
+
+- **Split and renamed companies.** `General Electric` resolves to GE Aerospace (the renamed parent; GE Vernova and GE HealthCare were spun off in 2023-24) and `Hewlett-Packard` to the old HP. The index cannot tell which successor an old contract belongs to, so names on a small list (`General Electric`, `Hewlett-Packard`, `Time Warner`) come back with `needs_review: true` and a `note` naming the successors. `Time Warner` still resolves to Time Warner Cable because that is the alias the index holds; the note says the media company is a different entity. Pick the successor by hand.
+- **Brands and d/b/a names.** With the Wikidata fallback on by default, a brand resolves to its own entity and `parent_company` is its owner when Wikidata records one (`YouTube` to `Google`). A brand with no owner on record (`Sam's Club`, `Instagram` in some cases) has `parent_company: null`. In `X d/b/a Y` the legal entity X is tried first, then the brand Y.
+- **Which alias matched.** `matched_alias` returns the stored alias. It does not yet say whether it was a ticker, an old name or a translation.
+- **As-of date.** `as_of` is the index build date for local matches and the lookup date for Wikidata, whose parent and headquarters values can be out of date (`WarnerMedia`'s parent, `Dow`'s parent). Wikidata answers are cached for `WIKIDATA_CACHE_TTL` seconds.
+- **Using the API directly.** It is meant to be used, one name per `POST /resolve`. For lists use the spreadsheet upload. There is no batch endpoint, API key or rate limit, so do not point a script at the public demo: it shares the Wikidata and GLEIF budget, and Wikidata throttles (you get `503`, not a wrong answer). Add a gateway rate limit before exposing it more widely.
+- **Headquarters format.** `headquarters` is whatever Wikidata or the index stores, so it can be a city, district or building and may not match `country` (`Philip Morris`, `Tencent`, `HSBC`). It is not cleaned up. Treat it as a hint and `country` (local matches only) as the more reliable field.
 
 - **Join key.** Join on `wikidata_id`. It is stable across runs and languages. `canonical_name` is always the English name but can change if Wikidata or the index is rebuilt. The index does not carry a version yet, so keep the file you resolved alongside its results. The stored `identifier` is the company's LEI (used only for the GLEIF tiebreak) and is not returned.
 - **Entity level.** A match is the legal brand most people mean, not always the operating company: `Google LLC` resolves to `Alphabet Inc.` because the index treats the group as the canonical company. `parent_company` is one level up only, and it is `null` both when a company has no parent and when Wikidata has no owner on record, so a blank does not prove independence. Roll-ups across a corporate group need a second pass on `parent_company` and are not built in.
@@ -312,7 +324,7 @@ Answers to questions raised during user testing (issues #42 to #66).
 - **Corrections.** There is no way to save a correction. Fix a wrong row in your own copy.
 - **History.** Only current names and common aliases are indexed. A former name resolves only if it is an alias or still on Wikidata, and the response does not say whether a company is active or defunct.
 - **Confidential data.** The service is a public demo. Unmatched names are sent to Wikidata (and GLEIF when enabled), and uploads sit on the server for `UPLOAD_TTL_SECONDS`. Do not upload confidential vendor lists.
-- **Size.** Spreadsheets are limited to `UPLOAD_MAX_ROWS` data rows (5,000 by default) and there is no resume: reloading the page loses the upload. Split larger lists.
+- **Size.** Spreadsheets are limited to `UPLOAD_MAX_ROWS` data rows (5,000 by default) and there is no resume: reloading the page loses the upload, so the page asks for confirmation if you try to leave mid-job. Split larger lists.
 - **Evaluation.** `eval/README.md` scores the local index only, on queries that were also used to pick the 0.90 threshold. The live app also answers from Wikidata, so its accuracy on unlisted names is different, and `Instagram` is an example that resolves through Wikidata. Treat the published numbers as a ceiling for the local index, not a guarantee for the whole app. `docs/deliverable2/architecture.html` is the Deliverable 2 snapshot and still describes `WRatio` at 0.8 (95.8%); the current decision is `ratio` at 0.90.
 - **Spreadsheet versus single name.** Both use the same resolver and return the same fields; the spreadsheet adds a row status. Since `canonical_name` is always English, `上海航空` is `Shanghai Airlines` in both (the single-name card also shows the Chinese name as `label`).
 
