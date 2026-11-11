@@ -58,7 +58,7 @@ Interactive API docs: `http://localhost:8000/docs`
 
 ## Web UI
 
-The service also serves a one-page web UI at the root URL, `http://localhost:8000/` (on Jetstream2, `http://<instance-public-ip>:8000/`). It is a single static file, `src/entity_resolver/static/index.html`, returned by `GET /` from the same FastAPI app and container, so there is no separate frontend to build or deploy, and it loads nothing from the internet.
+The service also serves a one-page web UI at the root URL, `http://localhost:8000/` (on Jetstream2 behind the proxy, `http://<instance-public-ip>/`). It is a single static file, `src/entity_resolver/static/index.html`, returned by `GET /` from the same FastAPI app and container, so there is no separate frontend to build or deploy, and it loads nothing from the internet.
 
 How to use it:
 
@@ -112,7 +112,7 @@ docker compose up -d        # builds the image on first run, then starts it
 docker compose ps           # STATUS should show "(healthy)" after ~10 s
 ```
 
-`compose.yml` runs one service, `api`, on port 8000. It has no dependencies yet (no database, vector store or cache). The alias index is kept in the named volume `alias-index`, and the service uses `restart: unless-stopped`, so it comes back by itself after a reboot or a Jetstream2 unshelve.
+`compose.yml` runs two services: `api` (port 8000, not published) and `proxy`, an nginx reverse proxy that publishes port 80 and forwards to `api`. `nginx.conf` limits each client IP to 10 requests per second with a burst of 30 (extra requests get `429`), caps request bodies at 12 MB, hides the nginx version, and adds `X-Content-Type-Options`, `Referrer-Policy` and `X-Frame-Options` headers. The API sees the real client address through `X-Forwarded-For`. There is no database, vector store or cache. The alias index is kept in the named volume `alias-index`, and the service uses `restart: unless-stopped`, so it comes back by itself after a reboot or a Jetstream2 unshelve.
 
 Useful commands:
 
@@ -135,15 +135,15 @@ docker run -d --name entity-resolver -p 8000:8000 --env-file .env entity-resolve
 1. SSH to the instance and install Docker if it isn't there (`curl -fsSL https://get.docker.com | sudo sh`, then `sudo usermod -aG docker $USER` and log in again).
 2. Make sure Docker starts at boot: `sudo systemctl enable docker`.
 3. Clone and start the stack with the commands above.
-4. Allow inbound TCP 8000 in the instance's security group in Exosphere/Horizon.
+4. Allow inbound TCP 80 in the instance's security group in Exosphere/Horizon, and remove the old rule for 8000.
 5. From your own laptop, check it answers from outside:
 
 ```bash
 export HOST=<instance-public-ip>
-curl http://$HOST:8000/health
+curl http://$HOST/health
 ```
 
-6. Open `http://$HOST:8000/` in a browser to use the web UI.
+6. Open `http://$HOST/` in a browser to use the web UI.
 
 ### Call every endpoint
 
@@ -151,35 +151,35 @@ Set `HOST` to `localhost` on your machine, or to the instance's public IP.
 
 ```bash
 # Health check
-curl http://$HOST:8000/health
+curl http://$HOST/health
 # {"status":"ok","version":"0.1.0"}
 
 # Readiness check (503 {"status":"not ready"} until the alias index has loaded)
-curl -i http://$HOST:8000/ready
+curl -i http://$HOST/ready
 # {"status":"ready"}
 
 # Resolve a name in English
-curl -X POST http://$HOST:8000/resolve \
+curl -X POST http://$HOST/resolve \
   -H "Content-Type: application/json" \
   -d '{"company_name": "Wal-Mart Stores Inc.", "language": "en"}'
 
 # Resolve a non-English alias
-curl -X POST http://$HOST:8000/resolve \
+curl -X POST http://$HOST/resolve \
   -H "Content-Type: application/json" \
   -d '{"company_name": "上海航空", "language": "zh"}'
 
 # A name not in the index comes back unresolved
-curl -X POST http://$HOST:8000/resolve \
+curl -X POST http://$HOST/resolve \
   -H "Content-Type: application/json" \
   -d '{"company_name": "Zyxwv Quantum Bakery"}'
 
 # Invalid input (blank name) is rejected with 422
-curl -i -X POST http://$HOST:8000/resolve \
+curl -i -X POST http://$HOST/resolve \
   -H "Content-Type: application/json" \
   -d '{"company_name": "   "}'
 ```
 
-Interactive docs: `http://$HOST:8000/docs`
+Interactive docs: `http://$HOST/docs`
 
 ### Container measurements
 
