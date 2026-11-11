@@ -1,18 +1,29 @@
 import asyncio
 import datetime as dt
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from entity_resolver import tabular, uploads
 from entity_resolver.config import settings
 from entity_resolver.gleif import Budget, HttpGleifClient, Verified, tiebreak
 from entity_resolver.models import (
+    BatchRequest,
+    BatchResponse,
     HealthResponse,
     PreviewResponse,
     ReadyResponse,
@@ -22,8 +33,14 @@ from entity_resolver.models import (
     UploadRunRequest,
     UploadStatus,
 )
-from entity_resolver.resolver import Resolver, is_generic, note_for, variants
-from entity_resolver.wikidata import WikidataClient, WikidataUnavailable
+from entity_resolver.observability import (
+    RequestMiddleware,
+    configure_logging,
+    metrics,
+)
+from entity_resolver.protection import BodyLimitMiddleware, api_key, rate_limit
+from entity_resolver.resolver import Match, Resolver, is_generic, note_for, variants
+from entity_resolver.wikidata import CircuitBreaker, WikidataClient, WikidataUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +72,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     /health answers as soon as the process is up; /ready and /resolve return
     503 until the load finishes.
     """
+    configure_logging(settings.log_format, settings.log_level)
     app.state.resolver = None
     app.state.wikidata = (
         WikidataClient(
             settings.wikidata_timeout,
             settings.match_threshold,
             cache_ttl=settings.wikidata_cache_ttl,
+            retries=settings.wikidata_retries,
+            breaker=CircuitBreaker(
+                settings.wikidata_breaker_failures, settings.wikidata_breaker_seconds
+            ),
         )
         if settings.wikidata_fallback
         else None
     )
+    # Caps Wikidata lookups in flight; waiting happens here, not in worker threads.
+    app.state.wikidata_gate = asyncio.Semaphore(settings.wikidata_max_concurrent)
     app.state.gleif = (
         HttpGleifClient(timeout=settings.gleif_timeout)
         if settings.gleif_enabled
@@ -80,10 +104,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         load_task.cancel()
-        app.state.jobs.close()
+        await app.state.jobs.aclose()  # stop jobs and save where each one stopped
 
 
 app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
+# Added last = outermost: the request id and timing cover the body-size check too.
+app.add_middleware(BodyLimitMiddleware)
+app.add_middleware(RequestMiddleware)
 
 
 @app.get("/", include_in_schema=False)
@@ -95,7 +122,20 @@ async def index() -> FileResponse:
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Check that the service is running."""
-    return HealthResponse(status="ok", version=settings.app_version)
+    return HealthResponse(
+        status="ok", version=settings.app_version, build=settings.build_id
+    )
+
+
+@app.get(
+    "/metrics",
+    response_class=PlainTextResponse,
+    include_in_schema=False,
+    dependencies=[Depends(api_key(True))],
+)
+async def metrics_endpoint() -> PlainTextResponse:
+    """Counters and request latency in Prometheus text format."""
+    return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
 
 
 @app.get("/ready", response_model=ReadyResponse)
@@ -135,7 +175,51 @@ async def _escalate(state, resolver: Resolver, name: str, region: str):
         return None
 
 
+async def _wikidata_lookup(
+    state, wikidata: WikidataClient, candidate: str, language: str
+) -> Match | None:
+    """One Wikidata lookup under the global concurrency cap.
+
+    A wait longer than ``WIKIDATA_QUEUE_SECONDS`` or an unavailable Wikidata (error,
+    HTTP 429, open circuit breaker) is a 503, never "unresolved".
+    """
+    unavailable = HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Wikidata is unavailable; retry shortly",
+    )
+    gate: asyncio.Semaphore | None = getattr(state, "wikidata_gate", None)
+    if gate is not None:
+        try:
+            await asyncio.wait_for(gate.acquire(), settings.wikidata_queue_seconds)
+        except TimeoutError:
+            metrics.inc("wikidata_busy_total")
+            raise unavailable from None
+    try:
+        return await asyncio.to_thread(wikidata.lookup, candidate, language)
+    except WikidataUnavailable as exc:
+        metrics.inc("wikidata_unavailable_total")
+        raise unavailable from exc
+    finally:
+        if gate is not None:
+            gate.release()
+
+
 async def resolve_name(
+    state, name: str, region: str, language: str = "en"
+) -> ResolveResponse:
+    """``_resolve_name`` plus counters for how each answer was reached."""
+    try:
+        result = await _resolve_name(state, name, region, language)
+    except HTTPException as exc:
+        metrics.inc("resolutions_total", source="none", status=str(exc.status_code))
+        raise
+    metrics.inc(
+        "resolutions_total", source=result.source or "none", status=result.status
+    )
+    return result
+
+
+async def _resolve_name(
     state, name: str, region: str, language: str = "en"
 ) -> ResolveResponse:
     """Resolve one name with the loaded resolver, then GLEIF if it is unsure.
@@ -162,13 +246,7 @@ async def resolve_name(
             and region == "world"
             and not is_generic(candidate)  # "Bank" or "Inc." finds an unrelated hit
         ):
-            try:
-                match = await asyncio.to_thread(wikidata.lookup, candidate, language)
-            except WikidataUnavailable as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Wikidata is unavailable; retry shortly",
-                ) from exc
+            match = await _wikidata_lookup(state, wikidata, candidate, language)
             source = "wikidata"
         if match is not None:
             used = candidate
@@ -224,7 +302,24 @@ async def resolve_name(
     )
 
 
-def _upload_resolver(state, region: str):
+def _retry_response(name: str) -> ResolveResponse:
+    """A row whose lookup was not completed; the caller should send it again."""
+    return ResolveResponse(
+        input=name,
+        status="retry",
+        wikidata_id=None,
+        canonical_name=None,
+        parent_company=None,
+        headquarters=None,
+        country=None,
+        confidence=None,
+        source=None,
+    )
+
+
+def _upload_resolver(
+    state, region: str, language: str = "en", retry_delay: float = 1.0
+):
     """A resolve function for upload jobs that survives a busy Wikidata.
 
     A 503 is retried once. After three rows still failing, names the local index
@@ -233,18 +328,7 @@ def _upload_resolver(state, region: str):
     """
     failures = 0
 
-    def retry_row(name: str) -> ResolveResponse:
-        return ResolveResponse(
-            input=name,
-            status="retry",
-            wikidata_id=None,
-            canonical_name=None,
-            parent_company=None,
-            headquarters=None,
-            country=None,
-            confidence=None,
-            source=None,
-        )
+    retry_row = _retry_response
 
     async def resolve_one(name: str) -> ResolveResponse:
         nonlocal failures
@@ -254,19 +338,23 @@ def _upload_resolver(state, region: str):
                 return retry_row(name)
         for attempt in range(2):
             try:
-                return await resolve_name(state, name, region)
+                return await resolve_name(state, name, region, language)
             except HTTPException as exc:
                 if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
                     raise
                 if attempt == 0:
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(retry_delay)
         failures += 1
         return retry_row(name)
 
     return resolve_one
 
 
-@app.post("/resolve", response_model=ResolveResponse)
+@app.post(
+    "/resolve",
+    response_model=ResolveResponse,
+    dependencies=[Depends(api_key(False)), Depends(rate_limit("resolve"))],
+)
 async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
     """Resolve a company name to its canonical entity."""
     if request.app.state.resolver is None:
@@ -276,6 +364,49 @@ async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
         )
     return await resolve_name(
         request.app.state, body.company_name, body.region, body.language
+    )
+
+
+@app.post(
+    "/resolve/batch",
+    response_model=BatchResponse,
+    dependencies=[Depends(api_key(True)), Depends(rate_limit("batch"))],
+)
+async def resolve_batch(body: BatchRequest, request: Request) -> BatchResponse:
+    """Resolve up to ``BATCH_MAX_NAMES`` names in one call.
+
+    Results come back in input order; each distinct name is resolved once. A name
+    whose Wikidata lookup is unavailable comes back with ``status: "retry"`` (send it
+    again later) instead of failing the whole call.
+    """
+    state = request.app.state
+    if state.resolver is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Model is still loading"
+        )
+    if len(body.company_names) > settings.batch_max_names:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"At most {settings.batch_max_names} names per call.",
+        )
+    resolve_one = _upload_resolver(state, body.region, body.language, retry_delay=0.2)
+    answers: dict[str, ResolveResponse] = {}
+    deadline = time.monotonic() + settings.batch_budget_seconds
+    for name in body.company_names:
+        if name in answers:
+            continue
+        if time.monotonic() > deadline:
+            # Out of time: keep what the local index can settle, retry the rest.
+            local = await asyncio.to_thread(state.resolver.resolve, name, body.region)
+            if local is None:
+                answers[name] = _retry_response(name)
+                continue
+        answers[name] = await resolve_one(name)
+    results = [answers[name] for name in body.company_names]
+    return BatchResponse(
+        results=results,
+        unique_names=len(answers),
+        retry=sum(1 for r in results if r.status == "retry"),
     )
 
 
@@ -297,7 +428,11 @@ def _bad_file(exc: tabular.UploadError) -> HTTPException:
     return HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
 
 
-@app.post("/upload", response_model=UploadResponse)
+@app.post(
+    "/upload",
+    response_model=UploadResponse,
+    dependencies=[Depends(api_key(False)), Depends(rate_limit("upload"))],
+)
 async def upload(file: UploadFile, request: Request) -> UploadResponse:
     """Upload an .xlsx, .xls or .csv file. Nothing is resolved yet."""
     store: uploads.JobStore = request.app.state.jobs
@@ -333,7 +468,11 @@ async def upload(file: UploadFile, request: Request) -> UploadResponse:
     )
 
 
-@app.get("/upload/{job_id}/preview", response_model=PreviewResponse)
+@app.get(
+    "/upload/{job_id}/preview",
+    response_model=PreviewResponse,
+    dependencies=[Depends(api_key(False))],
+)
 async def upload_preview(
     job_id: str, request: Request, sheet: str | None = None, has_header: bool = True
 ) -> PreviewResponse:
@@ -357,6 +496,7 @@ async def upload_preview(
     "/upload/{job_id}/resolve",
     response_model=UploadStatus,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(api_key(False)), Depends(rate_limit("upload"))],
 )
 async def upload_resolve(
     job_id: str, body: UploadRunRequest, request: Request
@@ -394,8 +534,9 @@ async def upload_resolve(
             status.HTTP_400_BAD_REQUEST, "This spreadsheet could not be read."
         ) from None
     job.state, job.done, job.total = "running", 0, len(table.data)
+    state.jobs.save(job)
     job.task = asyncio.create_task(
-        uploads.process(job, table, _upload_resolver(state, body.region))
+        uploads.process(job, table, _upload_resolver(state, body.region), body.region)
     )
     return _job_status(job)
 
@@ -410,13 +551,17 @@ def _job_status(job: uploads.Job) -> UploadStatus:
     )
 
 
-@app.get("/upload/{job_id}/status", response_model=UploadStatus)
+@app.get(
+    "/upload/{job_id}/status",
+    response_model=UploadStatus,
+    dependencies=[Depends(api_key(False))],
+)
 async def upload_status(job_id: str, request: Request) -> UploadStatus:
     """Progress of the resolve job, and the integrity checks once it is done."""
     return _job_status(_job(request, job_id))
 
 
-@app.get("/upload/{job_id}/download")
+@app.get("/upload/{job_id}/download", dependencies=[Depends(api_key(False))])
 async def upload_download(job_id: str, request: Request) -> FileResponse:
     """The resolved file: the original rows with the resolver's columns appended."""
     job = _job(request, job_id)

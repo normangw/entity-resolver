@@ -8,6 +8,7 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    build: str = "unknown"  # the deployed build id (BUILD_ID), unlike ``version``
 
 
 class ReadyResponse(BaseModel):
@@ -58,6 +59,30 @@ class ResolveResponse(BaseModel):
     matched_alias: str | None = None  # the stored name the input matched on
     as_of: str | None = None  # date the matched data was built (local) or fetched
     note: str | None = None  # why this result needs a human look, if it does
+
+
+class BatchRequest(BaseModel):
+    """Several names resolved in one call; the limit is ``BATCH_MAX_NAMES``."""
+
+    company_names: list[str] = Field(min_length=1, max_length=1000)
+    language: Language = "en"
+    region: Region = "world"
+
+    @field_validator("company_names")
+    @classmethod
+    def clean_names(cls, names: list[str]) -> list[str]:
+        out = [n.strip() for n in names]
+        if any(not n or len(n) > 200 for n in out):
+            raise ValueError("each name must be 1 to 200 characters and not blank")
+        return out
+
+
+class BatchResponse(BaseModel):
+    """One result per input name, in order. Duplicates are resolved once."""
+
+    results: list[ResolveResponse]
+    unique_names: int
+    retry: int  # rows whose lookup was unavailable; send them again later
 
 
 class UploadResponse(BaseModel):

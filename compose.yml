@@ -3,10 +3,19 @@
 # only published port (80); the API is reachable only through it. There is no
 # database, vector store or cache.
 # Start everything on a fresh clone with:  docker compose up -d
+# To make /health report the deployed commit:
+#   BUILD_ID=$(git rev-parse --short HEAD) docker compose up -d --build
+#
+# NOTE: the resource limits, cap_drop and healthchecks below have not been run on a
+# live host; check `docker compose ps` shows both services healthy after the first
+# start, and `docker compose logs api` for permission errors on /data/uploads.
 
 services:
   api:
-    build: .
+    build:
+      context: .
+      args:
+        BUILD_ID: ${BUILD_ID:-unknown}
     image: entity-resolver:latest
     # Settings come in at run time, never baked into the image.
     # .env is optional: without it the defaults in config.py apply.
@@ -21,7 +30,25 @@ services:
       - "8000"
     volumes:
       - alias-index:/app/src/entity_resolver/data
+      # Upload jobs (files, state, answers) survive a restart for UPLOAD_TTL_SECONDS.
+      - uploads:/data/uploads
     restart: unless-stopped
+    # Let uvicorn drain requests and the app save running jobs (see the Dockerfile).
+    stop_grace_period: 30s
+    # The index and RapidFuzz need well under 1 GB; cap it so a leak cannot take the
+    # host down. Two CPUs bound a runaway scoring loop.
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   proxy:
     image: nginx:1.27-alpine
@@ -33,8 +60,25 @@ services:
       api:
         condition: service_healthy
     restart: unless-stopped
+    mem_limit: 128m
+    cpus: 1.0
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # busybox wget ships with the alpine image.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   # Seeded from the image on first start. After changing companies.json in the
   # repo, run `docker compose down -v && docker compose up -d --build` to reseed.
   alias-index:
+  uploads:

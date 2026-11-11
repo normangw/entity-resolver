@@ -11,7 +11,9 @@ Nothing here logs cell contents.
 """
 
 import asyncio
+import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -67,6 +69,91 @@ class Job:
     summary: UploadSummary | None = None
     output: Path | None = None
     task: asyncio.Task[None] | None = None
+    # Answers from earlier runs, keyed "region\0name". A re-run reuses every one
+    # that is not "retry", so only the rows Wikidata could not answer are redone.
+    cache: dict[str, ResolveResponse] = field(default_factory=dict)
+
+
+META_FILE = "meta.json"
+CACHE_FILE = "cache.json"
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write so that a crash leaves either the old file or the new one."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def save_job(job: Job) -> None:
+    """Persist the job's state next to its files so a restart can find it again."""
+    meta = {
+        "id": job.id,
+        "filename": job.filename,
+        "kind": job.kind,
+        "input": job.input_path.name,
+        "created": job.created,
+        "state": job.state,
+        "done": job.done,
+        "total": job.total,
+        "error": job.error,
+        "output": job.output.name if job.output else None,
+        "summary": job.summary.model_dump() if job.summary else None,
+    }
+    try:
+        _write_atomic(job.dir / META_FILE, json.dumps(meta))
+        _write_atomic(
+            job.dir / CACHE_FILE,
+            json.dumps({k: v.model_dump() for k, v in job.cache.items()}),
+        )
+    except OSError:
+        logger.exception("Could not save upload job state")
+
+
+def load_job(job_dir: Path) -> Job | None:
+    """Rebuild a job from its directory, or None if it is missing or unreadable.
+
+    A job that was running when the process stopped comes back as an error with a
+    message saying to resolve again; the answers it had finished are kept.
+    """
+    try:
+        meta = json.loads((job_dir / META_FILE).read_text(encoding="utf-8"))
+        input_path = job_dir / Path(meta["input"]).name  # never leave job_dir
+        job = Job(
+            id=meta["id"],
+            dir=job_dir,
+            filename=meta["filename"],
+            kind=meta["kind"],
+            input_path=input_path,
+            created=float(meta["created"]),
+            state=meta["state"],
+            done=int(meta["done"]),
+            total=int(meta["total"]),
+            error=meta["error"],
+        )
+        if meta["id"] != job_dir.name or not input_path.is_file():
+            return None
+        if meta["summary"]:
+            job.summary = UploadSummary.model_validate(meta["summary"])
+        if meta["output"]:
+            output = job_dir / Path(meta["output"]).name
+            job.output = output if output.is_file() else None
+        cache_path = job_dir / CACHE_FILE
+        if cache_path.is_file():
+            raw = json.loads(cache_path.read_text(encoding="utf-8"))
+            job.cache = {k: ResolveResponse.model_validate(v) for k, v in raw.items()}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if job.state == "running":
+        job.state = "error"
+        job.error = (
+            "The server restarted while this file was being resolved. "
+            "Resolve it again; names that were already answered are kept."
+        )
+    elif job.state == "done" and job.output is None:
+        job.state = "error"
+        job.error = "The result file is no longer available. Resolve it again."
+    return job
 
 
 class JobStore:
@@ -78,6 +165,15 @@ class JobStore:
         self.max_running = max_running
         self._jobs: dict[str, Job] = {}
         root.mkdir(parents=True, exist_ok=True)
+        self._restore()
+
+    def _restore(self) -> None:
+        """Pick up jobs a previous process left on disk (same ids, same files)."""
+        for entry in self.root.iterdir():
+            if entry.is_dir() and _JOB_ID.fullmatch(entry.name):
+                job = load_job(entry)
+                if job is not None:
+                    self._jobs[job.id] = job
 
     def create(self, filename: str, ext: str) -> Job:
         """A new job with an empty directory; the caller writes ``job.input_path``."""
@@ -88,6 +184,9 @@ class JobStore:
         job = Job(job_id, job_dir, filename, kind, job_dir / f"input{ext}")
         self._jobs[job_id] = job
         return job
+
+    def save(self, job: Job) -> None:
+        save_job(job)
 
     def get(self, job_id: str) -> Job | None:
         """The job, or None if unknown or expired (an expired job is deleted now)."""
@@ -123,10 +222,21 @@ class JobStore:
             ):
                 shutil.rmtree(entry, ignore_errors=True)
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
+        """Stop running jobs, wait for them, and save where each one stopped."""
+        tasks = [j.task for j in self._jobs.values() if j.task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         for job in self._jobs.values():
-            if job.task is not None:
-                job.task.cancel()
+            if job.state == "running":
+                job.state = "error"
+                job.error = (
+                    "The server restarted while this file was being resolved. "
+                    "Resolve it again; names that were already answered are kept."
+                )
+            if job.state != "uploaded" or job.cache:
+                save_job(job)
 
 
 @dataclass(frozen=True)
@@ -329,10 +439,17 @@ def verify_output(
     return checks
 
 
-async def process(job: Job, table: Table, resolve: Resolve) -> None:
-    """Resolve every unique name, write the result file and verify it."""
+async def process(
+    job: Job, table: Table, resolve: Resolve, region: str = "world"
+) -> None:
+    """Resolve every unique name, write the result file and verify it.
+
+    Answers from an earlier run of this job are reused, except ``retry`` rows, so a
+    second run only repeats the lookups that Wikidata could not answer.
+    """
     job.state, job.done, job.total = "running", 0, len(table.data)
     job.error = job.summary = job.output = None
+    job.cache = {k: v for k, v in job.cache.items() if v.status != "retry"}
     try:
         cache: dict[str, ResolveResponse] = {}
         extra: list[list[Any]] = []
@@ -349,7 +466,11 @@ async def process(job: Job, table: Table, resolve: Resolve) -> None:
                 statuses.append("skipped")
             else:
                 if name not in cache:
-                    cache[name] = await resolve(name)
+                    stored = job.cache.get(f"{region}\0{name}")
+                    if stored is None:
+                        stored = await resolve(name)
+                        job.cache[f"{region}\0{name}"] = stored
+                    cache[name] = stored
                 hit = cache[name]
                 extra.append(_extra(hit, hit.status))
                 statuses.append(hit.status)
@@ -393,7 +514,10 @@ async def process(job: Job, table: Table, resolve: Resolve) -> None:
                 "was never completed; it is not a 'no such company' answer. "
                 "Resolve the file again, preferably in a few minutes, to fill them in."
             )
-        stem = Path(job.filename).stem or "result"
+        # The name comes from the user and ends up in a Content-Disposition header.
+        stem = (
+            re.sub(r"[^\w.\- ]", "_", Path(job.filename).stem)[:80].strip() or "result"
+        )
         job.summary = UploadSummary(
             rows=len(table.data),
             unique_names=len(cache),
@@ -414,9 +538,11 @@ async def process(job: Job, table: Table, resolve: Resolve) -> None:
         )
         job.output = output
         job.state = "done"
+        save_job(job)
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.exception("Upload job failed")
         job.state = "error"
         job.error = "Something went wrong while resolving this file."
+        save_job(job)

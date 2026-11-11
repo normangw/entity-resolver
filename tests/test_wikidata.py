@@ -241,7 +241,7 @@ def test_resolve_endpoint_falls_back_to_wikidata(monkeypatch):
     monkeypatch.setattr(settings, "wikidata_fallback", True)
     monkeypatch.setattr(
         "entity_resolver.main.WikidataClient",
-        lambda timeout, threshold, cache_ttl: WikidataClient(
+        lambda timeout, threshold, **kw: WikidataClient(
             timeout, threshold, fetch=YOUTUBE
         ),
     )
@@ -363,9 +363,7 @@ def test_resolve_endpoint_returns_503_when_wikidata_is_down(monkeypatch):
     monkeypatch.setattr(settings, "wikidata_fallback", True)
     monkeypatch.setattr(
         "entity_resolver.main.WikidataClient",
-        lambda timeout, threshold, cache_ttl: WikidataClient(
-            timeout, threshold, fetch=down
-        ),
+        lambda timeout, threshold, **kw: WikidataClient(timeout, threshold, fetch=down),
     )
     with TestClient(app) as client:
         wait_ready(client)
@@ -378,7 +376,7 @@ def test_resolve_endpoint_skips_wikidata_for_a_region_filter(monkeypatch):
     monkeypatch.setattr(settings, "wikidata_fallback", True)
     monkeypatch.setattr(
         "entity_resolver.main.WikidataClient",
-        lambda timeout, threshold, cache_ttl: WikidataClient(
+        lambda timeout, threshold, **kw: WikidataClient(
             timeout, threshold, fetch=YOUTUBE
         ),
     )
