@@ -107,9 +107,15 @@
     <h1>Entity Resolver</h1>
     <span id="ready" class="badge">checking…</span>
   </header>
-  <p class="sub">Type a messy or non-English company name. The service matches it
-    against the alias index and returns the canonical company, its parent and its
-    headquarters.</p>
+  <p class="sub">Type a messy or non-English company name. The service finds the
+    company it most likely means and returns its standard English name, its parent and
+    its headquarters.</p>
+  <p class="hint" style="margin-top:-8px">What it covers: about 14,000 listed companies,
+    plus brands and subsidiaries found on Wikidata. It does not know most private
+    companies or badly misspelled names. <b>Unresolved means &ldquo;not found in
+    these sources&rdquo;, not &ldquo;this company does not exist&rdquo;.</b>
+    The similarity score (called confidence in the API and downloads) is how closely your text matches a known name, not the chance that the
+    match is right: check anything marked &ldquo;please review&rdquo;.</p>
 
   <form id="form" autocomplete="off">
     <div class="row">
@@ -133,6 +139,8 @@
       </div>
       <div>
         <label for="region">Region</label>
+        <p class="hint" style="margin:0 0 4px">Where the company is headquartered.
+          Outside these regions, use World.</p>
         <select id="region" name="region">
           <option value="world">World</option>
           <option value="us">United States</option>
@@ -172,9 +180,10 @@
           <div class="grow">
             <label for="column">Company name column</label>
             <select id="column"></select>
+            <p class="hint" id="colhint" style="margin:4px 0 0"></p>
           </div>
           <div>
-            <label for="uregion">Region</label>
+            <label for="uregion">Region (headquarters country)</label>
             <select id="uregion">
               <option value="world">World</option>
               <option value="us">United States</option>
@@ -242,11 +251,11 @@
     if (data.status !== "resolved") {
       result.innerHTML = '<div class="card unresolved"><div class="status">Unresolved</div>' +
         "<h2>No confident match for “" + esc(data.input) + "”</h2>" +
-        "<p>No company in the index scored above the match threshold" +
+        "<p>No company in the index or on Wikidata matched closely enough" +
         ($("region").value !== "world" ? " within the selected region" : "") +
         ($("region").value !== "world"
           ? ". Names outside the local index are only looked up on Wikidata when the region is World, so a company that is not in the index (such as Shanghai Airlines) can be found with World but not with a narrower region. Try World, or check the spelling.</p>"
-          : ". Check the spelling or try another variant.</p>") +
+          : ". This tool covers listed companies and well-documented brands, so a small private company can be missing even when it exists. Check the spelling or try another variant.</p>") +
         raw + "</div>";
       return;
     }
@@ -258,7 +267,8 @@
     result.innerHTML = '<div class="card resolved"><div class="status">Resolved</div>' +
       "<h2>" + esc(data.canonical_name) + "</h2>" +
       (data.needs_review
-        ? '<div class="banner bad">Possible match, please review: the score is close to the threshold or more than one company has this name.</div>' : "") +
+        ? '<div class="banner bad">Possible match, please review. ' +
+          esc(data.note || "The score is close to the threshold or more than one company has this name.") + "</div>" : "") +
       "<dl>" +
       (data.label ? "<dt>Name in selected language</dt><dd>" + esc(data.label) + "</dd>" : "") +
       "<dt>Input</dt><dd>" + val(data.input) + "</dd>" +
@@ -266,8 +276,12 @@
       "<dt>Headquarters</dt><dd>" + val(data.headquarters) + "</dd>" +
       "<dt>Country</dt><dd>" + val(data.country, data.source === "wikidata" ? "not available from Wikidata lookup" : "none") + "</dd>" +
       "<dt>Wikidata ID</dt><dd>" + wd + "</dd>" +
-      "<dt>Confidence</dt><dd>" + pct + '%<div class="meter"><span style="width:' +
-      pct + '%"></span></div></dd>' +
+      "<dt>Name similarity</dt><dd>" + pct + '%<div class="meter"><span style="width:' +
+      pct + '%"></span></div><small class="none">How closely your text matches the stored name. ' +
+      "100% means the text matched, not that it is the right company. Below 100% or flagged: review it. " +
+      "Local and Wikidata scores come from different scorers, so compare within one source.</small></dd>" +
+      (data.matched_alias ? "<dt>Matched on</dt><dd>" + esc(data.matched_alias) + "</dd>" : "") +
+      (data.source ? "<dt>Source</dt><dd>" + esc(data.source) + (data.as_of ? " (data as of " + esc(data.as_of) + ")" : "") + "</dd>" : "") +
       "</dl>" + raw + "</div>";
   }
 
@@ -290,7 +304,11 @@
       });
       const data = await r.json().catch(() => ({}));
       if (r.ok) render(data);
-      else if (r.status === 503) renderError("Model still loading", "The alias index is loading. Try again in a few seconds.");
+      else if (r.status === 503) {
+        const why = typeof data.detail === "string" ? data.detail : "";
+        if (/wikidata/i.test(why)) renderError("Wikidata is busy", "The company is not in the local index, and Wikidata could not be reached or is rate limiting. Wait a minute and try again.");
+        else renderError("Model still loading", "The alias index is loading. Try again in a few seconds.");
+      }
       else if (r.status === 422) renderError("Invalid input", (data.detail || []).map((d) => d.msg).join("; ") || "The request was rejected.");
       else renderError("Request failed (" + r.status + ")", JSON.stringify(data));
     } catch (err) {
@@ -317,6 +335,11 @@
 
   // ---- Spreadsheet upload -------------------------------------------------
   const uform = $("uform"), uresult = $("uresult"), ubtn = $("ubtn");
+  // Reloading or closing the tab mid-job loses the upload, so ask first.
+  let working = false;
+  window.addEventListener("beforeunload", (e) => {
+    if (working) { e.preventDefault(); e.returnValue = ""; }
+  });
   let up = null;  // {id, filename, kind, sheets, max_rows} of the current upload
 
   const colLetter = (i) => {
@@ -366,6 +389,7 @@
     $("column").innerHTML = p.columns.map((c, i) =>
       '<option value="' + i + '">' + colLetter(i) + " — " + esc(c) + "</option>").join("");
     $("column").value = p.suggested_column;
+    $("colhint").textContent = "Suggested from the header. Check that this column holds company names, not people.";
     uresult.innerHTML = "";
     drawPreview(p);
     $("column").onchange = () => drawPreview(p);
@@ -386,6 +410,7 @@
     e.preventDefault();
     if (!up) return;
     ubtn.disabled = true;
+    working = true;
     ubtn.textContent = "Resolving…";
     uresult.innerHTML = '<div class="bar"><span id="prog"></span></div><p class="hint" id="progtext">Starting…</p>';
     try {
@@ -406,6 +431,7 @@
     } catch (err) {
       uerror("Could not reach the API", String(err));
     } finally {
+      working = false;
       ubtn.disabled = false;
       ubtn.textContent = "Resolve file";
     }
@@ -415,11 +441,12 @@
     const stat = (label, n) => '<div class="stat"><b>' + n + "</b>" + label + "</div>";
     const failed = s.checks.filter((c) => !c.ok).length;
     uresult.innerHTML =
-      '<div class="card ' + (s.passed ? "resolved" : "error") + '">' +
-      '<div class="status">' + (s.passed ? "Done" : "Check failed") + "</div>" +
+      '<div class="card ' + (!s.passed ? "error" : s.partial ? "unresolved" : "resolved") + '">' +
+      '<div class="status">' + (!s.passed ? "Check failed" : s.partial ? "Partly done: " + s.retry + " rows to retry" : "Done") + "</div>" +
       '<div class="stats">' + stat("rows", s.rows) + stat("resolved", s.resolved) +
       stat("unresolved", s.unresolved) + stat("blank names", s.blank) +
       (s.retry ? stat("retry later", s.retry) : "") +
+      (s.needs_review ? stat("please review", s.needs_review) : "") +
       (s.skipped ? stat("skipped (too long)", s.skipped) : "") +
       stat("unique names", s.unique_names) + "</div>" +
       '<div class="banner ' + (s.passed ? "ok" : "bad") + '">' +
@@ -433,10 +460,11 @@
         "<li><span class=\"" + (c.ok ? "ok" : "bad") + '">' + (c.ok ? "✓" : "✗") + "</span> " +
         esc(c.name) + "<small>" + esc(c.detail) + "</small></li>").join("") + "</ul>" +
       '<div class="tablewrap"><table><thead><tr><th>Input</th><th>Status</th><th>Canonical name</th>' +
-      "<th>Country</th><th>Confidence</th></tr></thead><tbody>" +
+      "<th>Country</th><th>Similarity</th><th>Review</th></tr></thead><tbody>" +
       s.sample.map((r) => "<tr><td>" + esc(r.input) + "</td><td>" + esc(r.status) + "</td><td>" +
         val(r.canonical_name) + "</td><td>" + val(r.country) + "</td><td>" +
-        (r.confidence == null ? val(null) : Math.round(r.confidence * 100) + "%") + "</td></tr>").join("") +
+        (r.confidence == null ? val(null) : Math.round(r.confidence * 100) + "%") + "</td><td>" +
+        (r.needs_review ? "please review" : "") + "</td></tr>").join("") +
       "</tbody></table></div>" +
       '<a class="button" href="/upload/' + up.id + '/download" download>Download ' +
       esc(s.download_name) + "</a></div>";

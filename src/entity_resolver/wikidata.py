@@ -39,6 +39,36 @@ _COMPANY_PROPS = (*_PARENT_PROPS, _HQ_PROP, "P452")  # P452 = industry
 _END_TIME = "P582"
 _SHARE = "P1107"  # proportion: the fraction of the entity an owner holds
 _HUMAN = "Q5"
+_INSTANCE_OF = "P31"
+# Things Wikidata gives an owner or a location that are not companies (the Empire
+# State Building has an owner and Georgetown has a headquarters). A hit whose
+# "instance of" is one of these is skipped. Not exhaustive: it lists the classes
+# testers hit, and a company tagged only with other classes still passes.
+_NOT_COMPANY_CLASSES = frozenset(
+    {
+        "Q41176",
+        "Q11303",
+        "Q1021645",  # building, skyscraper, office building
+        "Q3918",
+        "Q38723",
+        "Q902104",
+        "Q875538",  # university, higher education,
+        "Q62078547",
+        "Q1371037",
+        "Q15936437",
+        "Q23002054",  # private/public ones
+        "Q484652",
+        "Q245065",  # international / intergovernmental organization
+        "Q327333",
+        "Q7278",
+        "Q33506",  # government agency, political party, museum
+        "Q163740",
+        "Q79913",  # nonprofit organization, NGO
+    }
+)
+# How many search hits to read. Few hits let other meanings of a common word
+# ("Mars" the planet) crowd out the company.
+_SEARCH_LIMIT = "25"
 # "owned by" (P127) also records shareholders, so it only counts as a parent when
 # the owner holds at least this fraction (statements with no stake stay in).
 _MIN_OWNER_SHARE = 0.5
@@ -154,14 +184,16 @@ class WikidataClient:
         return match
 
     def _lookup(self, name: str, language: str) -> Match | None:
+        # Always search in English so the same name finds the same company whatever
+        # the display language is; ``language`` only chooses the labels we return.
         hits = self._fetch(
             {
                 "action": "wbsearchentities",
                 "search": name,
-                "language": language,
-                "uselang": language,
+                "language": "en",
+                "uselang": "en",
                 "type": "item",
-                "limit": "8",
+                "limit": _SEARCH_LIMIT,
             }
         )["search"]
         wanted = normalize(name)
@@ -188,6 +220,9 @@ class WikidataClient:
         for hit, score in scored:
             entity = entities[hit["id"]]
             claims = entity.get("claims", {})
+            kinds = set(_statement_ids(claims, _INSTANCE_OF, include_ended=True))
+            if kinds & _NOT_COMPANY_CLASSES:
+                continue
             if any(prop in claims for prop in _COMPANY_PROPS):
                 links = len(entity.get("sitelinks", {}))
                 companies.append((score, links, hit, claims))

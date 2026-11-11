@@ -1,4 +1,5 @@
 import asyncio
+import datetime as dt
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -21,7 +22,7 @@ from entity_resolver.models import (
     UploadRunRequest,
     UploadStatus,
 )
-from entity_resolver.resolver import Resolver, is_generic
+from entity_resolver.resolver import Resolver, is_generic, note_for, variants
 from entity_resolver.wikidata import WikidataClient, WikidataUnavailable
 
 logger = logging.getLogger(__name__)
@@ -142,26 +143,36 @@ async def resolve_name(
     Shared by POST /resolve and the file-upload jobs. ``state`` is ``app.state``.
     """
     resolver: Resolver = state.resolver
-    # The model call is blocking, so hand it to a worker thread and keep the
-    # event loop free for other requests (e.g. /health).
-    match = await asyncio.to_thread(resolver.resolve, name, region)
-    source: Literal["local", "wikidata"] = "local"
     wikidata: WikidataClient | None = getattr(state, "wikidata", None)
-    # Wikidata hits carry no country, so they cannot honor a region filter.
-    if (
-        match is None
-        and wikidata is not None
-        and region == "world"
-        and not is_generic(name)  # "Bank" or "Inc." would only find an unrelated hit
-    ):
-        try:
-            match = await asyncio.to_thread(wikidata.lookup, name, language)
-        except WikidataUnavailable as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Wikidata is unavailable; retry shortly",
-            ) from exc
-        source = "wikidata"
+    today = dt.date.today().isoformat()
+    match = None
+    source: Literal["local", "wikidata"] = "local"
+    used = name
+    # Try the name as typed, then without vendor numbers, parentheses and a trailing
+    # city, then (for "X d/b/a Y") each part. The first variant that resolves wins.
+    for candidate in variants(name):
+        # The model call is blocking, so hand it to a worker thread and keep the
+        # event loop free for other requests (e.g. /health).
+        match = await asyncio.to_thread(resolver.resolve, candidate, region)
+        source = "local"
+        # Wikidata hits carry no country, so they cannot honor a region filter.
+        if (
+            match is None
+            and wikidata is not None
+            and region == "world"
+            and not is_generic(candidate)  # "Bank" or "Inc." finds an unrelated hit
+        ):
+            try:
+                match = await asyncio.to_thread(wikidata.lookup, candidate, language)
+            except WikidataUnavailable as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Wikidata is unavailable; retry shortly",
+                ) from exc
+            source = "wikidata"
+        if match is not None:
+            used = candidate
+            break
     if match is None:
         verified: Verified | None = await _escalate(state, resolver, name, region)
         if verified is not None:
@@ -177,6 +188,7 @@ async def resolve_name(
                 country=e.country,
                 source="gleif",
                 confidence=verified.match.score,
+                as_of=resolver.as_of,
             )
         return ResolveResponse(
             input=name,
@@ -190,6 +202,7 @@ async def resolve_name(
             source=None,
         )
     e = match.entity
+    note = note_for(used)
     return ResolveResponse(
         input=name,
         status="resolved",
@@ -201,7 +214,13 @@ async def resolve_name(
         country=e.country,
         confidence=match.score,
         source=source,
-        needs_review=match.ambiguous or match.score < _REVIEW_BELOW,
+        needs_review=(
+            match.ambiguous or match.score < _REVIEW_BELOW or note is not None
+        ),
+        matched_alias=match.matched_alias
+        or (e.label or e.canonical_name if source == "wikidata" else None),
+        as_of=today if source == "wikidata" else resolver.as_of,
+        note=note,
     )
 
 

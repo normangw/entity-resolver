@@ -14,8 +14,9 @@ class Settings(BaseSettings):
     app_version: str = Field(default="0.1.0", min_length=1)
     debug: bool = False
     wikidata_timeout: int = Field(default=10, gt=0)
-    # Off by default so tests and CI never touch the network.
-    wikidata_fallback: bool = False
+    # On by default so brands and subsidiaries (YouTube, Instagram) resolve. Tests set
+    # WIKIDATA_FALLBACK=false in tests/conftest.py so CI never touches the network.
+    wikidata_fallback: bool = True
     # Seconds to remember a Wikidata answer (0 disables); it throttles quickly.
     wikidata_cache_ttl: float = Field(default=3600, ge=0, allow_inf_nan=False)
 

@@ -31,7 +31,22 @@ MAX_NAME_CHARS = 200  # the limit POST /resolve puts on a name
 PREVIEW_ROWS = 6
 SAMPLE_ROWS = 8
 _JOB_ID = re.compile(r"[0-9a-f]{32}")
-_NAME_HINTS = ("company", "name", "firm", "organi", "entity", "employer", "customer")
+# Headers that name a company, best first. Checked before the weaker "name".
+_STRONG_HINTS = (
+    "supplier", "vendor", "counterparty", "company", "firm", "organi", "entity",
+    "employer", "customer", "client", "business", "payee", "merchant",
+)  # fmt: skip
+_WEAK_HINTS = ("name",)
+# "Vendor ID" or "Supplier Phone" mention a vendor but do not hold its name.
+_NOT_A_NAME = frozenset(
+    "id ids number no num code phone tel email mail address date amount total "
+    "status type category country city state zip".split()
+)
+# Headers that hold people, not companies ("Contact Name"), so "name" alone is ignored.
+_PERSON_WORDS = (
+    "contact", "person", "first", "last", "full", "user", "employee", "manager",
+    "owner", "rep", "buyer", "approver", "requester",
+)  # fmt: skip
 _STATUSES = {"resolved", "unresolved", "blank", "skipped", "retry"}
 
 Resolve = Callable[[str], Awaitable[ResolveResponse]]
@@ -133,9 +148,21 @@ def _sheet_arg(path: Path, kind: tabular.Kind, sheet: str | None) -> str | None:
 
 
 def suggest_column(labels: Sequence[str]) -> int:
-    """The first column whose label looks like company names, else the first."""
-    for i, label in enumerate(labels):
-        if any(hint in label.lower() for hint in _NAME_HINTS):
+    """The column most likely to hold company names, judged by its header.
+
+    A header like Supplier, Vendor or Company wins over a plain "Name", and a header
+    that names a person ("Contact Name") never counts as a plain "Name". Falls back
+    to the first column. The page asks the user to confirm the choice.
+    """
+    lowered = [label.lower() for label in labels]
+    for i, label in enumerate(lowered):
+        words = set(re.findall(r"[a-z]+", label))
+        if any(hint in label for hint in _STRONG_HINTS) and not words & _NOT_A_NAME:
+            return i
+    for i, label in enumerate(lowered):
+        if any(hint in label for hint in _WEAK_HINTS) and not any(
+            word in label for word in _PERSON_WORDS
+        ):
             return i
     return 0
 
@@ -198,7 +225,7 @@ def load_table(
 def _extra(r: ResolveResponse | None, status: str) -> list[Any]:
     """The ``RESULT_COLUMNS`` values for one row."""
     if r is None:
-        return [status, None, None, None, None, None, None, None]
+        return [status, None, None, None, None, None, None, None, None]
     return [
         r.status,
         r.canonical_name,
@@ -208,6 +235,7 @@ def _extra(r: ResolveResponse | None, status: str) -> list[Any]:
         r.country,
         r.confidence,
         r.source,
+        "yes" if r.needs_review else None,
     ]
 
 
@@ -276,7 +304,7 @@ def verify_output(
     add(
         "Every row has a status",
         len(got) == n and all(s in _STATUSES for s in got) and got == statuses,
-        "resolved, unresolved, blank or skipped on every row",
+        "resolved, unresolved, blank, skipped or retry on every row",
     )
 
     incomplete = 0
@@ -327,6 +355,8 @@ async def process(job: Job, table: Table, resolve: Resolve) -> None:
                 statuses.append(hit.status)
                 if hit.source:
                     counts[hit.source] += 1
+                if hit.needs_review and hit.status == "resolved":
+                    counts["review"] += 1
                 if len(sample) < SAMPLE_ROWS:
                     sample.append(
                         SampleRow(
@@ -335,6 +365,7 @@ async def process(job: Job, table: Table, resolve: Resolve) -> None:
                             canonical_name=hit.canonical_name,
                             country=hit.country,
                             confidence=hit.confidence,
+                            needs_review=hit.needs_review,
                         )
                     )
             counts[statuses[-1]] += 1
@@ -358,7 +389,9 @@ async def process(job: Job, table: Table, resolve: Resolve) -> None:
         if counts["retry"]:
             notes.append(
                 f"{counts['retry']} rows could not be looked up because Wikidata was "
-                "busy. They are marked retry; resolve the file again to fill them in."
+                "busy, so this file is only partly done. 'retry' means the lookup "
+                "was never completed; it is not a 'no such company' answer. "
+                "Resolve the file again, preferably in a few minutes, to fill them in."
             )
         stem = Path(job.filename).stem or "result"
         job.summary = UploadSummary(
@@ -369,6 +402,8 @@ async def process(job: Job, table: Table, resolve: Resolve) -> None:
             blank=counts["blank"],
             skipped=counts["skipped"],
             retry=counts["retry"],
+            partial=counts["retry"] > 0,
+            needs_review=counts["review"],
             notes=notes,
             from_local=counts["local"],
             from_gleif=counts["gleif"],

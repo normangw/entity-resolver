@@ -5,6 +5,7 @@ for every request. ``resolve`` is synchronous and CPU-bound, so async callers
 must run it off the event loop (``asyncio.to_thread``) or from a plain ``def``.
 """
 
+import datetime as dt
 import json
 import re
 import time
@@ -35,8 +36,38 @@ _MIN_FUZZY_LENGTH = 8
 # match the first company whose name contains them ("Bank" -> "Bank Aladin Syariah").
 _GENERIC_NAMES = frozenset(
     "bank banks holding holdings inc corp corporation company co ltd limited llc "
-    "plc group groups stores store the and usa us uk paris london tokyo".split()
+    "plc group groups stores store the and usa us uk paris london tokyo "
+    "tbd tba tbc na n a nil null none unknown test misc other various".split()
 )
+# A real company name has at least this many letters or digits. One character is
+# a placeholder ("T", "V", "-"), and a bare ticker that short is too ambiguous.
+_MIN_QUERY_LENGTH = 2
+
+# Names whose answer needs a human, with the reason. The match is still returned,
+# but flagged for review with this note: the old name no longer points at one company.
+_NOTES = {
+    "general electric": (
+        "General Electric split into GE Aerospace (the renamed parent), GE Vernova "
+        "(energy) and GE HealthCare in 2023-24. Check which unit the record means."
+    ),
+    "hewlett packard": (
+        "Hewlett-Packard split in 2015 into HP Inc. (PCs, printers) and Hewlett "
+        "Packard Enterprise (servers, services). Check which one the record means."
+    ),
+    "time warner": (
+        "Time Warner Inc. (media) became WarnerMedia and is now part of Warner Bros. "
+        "Discovery. Time Warner Cable is a separate company, now part of Charter."
+    ),
+}
+# Noise found in real vendor columns: notes in brackets, vendor numbers, a city.
+_NOISE_PARENS = re.compile(r"\([^)]*\)|\[[^\]]*\]")
+_NOISE_ID = re.compile(
+    r"[,;\s]*(?:vendor|vend|supplier|acct|account|id)?\s*#\s*\w+", re.IGNORECASE
+)
+_TRAILING_PLACE = re.compile(
+    r"\s*[,\-\u2013|]\s*[A-Za-z][A-Za-z .']+(?:,\s*)?[A-Z]{2}\s*$"
+)
+_DBA = re.compile(r"\s+(?:d\s*/\s*b\s*/\s*a|dba|doing business as)\s+", re.I)
 
 # Regions a caller can restrict matching to. "world" means no restriction.
 _EU = frozenset(
@@ -84,8 +115,41 @@ def normalize(name: str) -> str:
 
 
 def is_generic(name: str) -> bool:
-    """True for a bare word or legal form that is not a company name ("Bank")."""
-    return normalize(name) in _GENERIC_NAMES
+    """True for input that is not a company name: a bare word or legal form
+    ("Bank"), a placeholder ("TBD"), or fewer than two letters or digits ("T", "?").
+    """
+    query = normalize(name)
+    return (
+        sum(ch.isalnum() for ch in query) < _MIN_QUERY_LENGTH or query in _GENERIC_NAMES
+    )
+
+
+def variants(name: str) -> list[str]:
+    """The names to try for one cell, most literal first.
+
+    The text as typed, then without parentheses and vendor numbers, then without a
+    trailing city and state, and for "X d/b/a Y" the legal entity X before the brand
+    Y. Callers stop at the first variant that resolves.
+    """
+    out: list[str] = []
+
+    def add(value: str) -> None:
+        value = value.strip(" ,;-")
+        if value and value not in out:
+            out.append(value)
+
+    add(name)
+    parts = _DBA.split(name)
+    for part in parts:
+        no_notes = _NOISE_ID.sub("", _NOISE_PARENS.sub(" ", part))
+        add(no_notes)
+        add(_TRAILING_PLACE.sub("", no_notes))
+    return out
+
+
+def note_for(name: str) -> str | None:
+    """The review note for a name that has been split or merged, if it has one."""
+    return _NOTES.get(normalize(name))
 
 
 @dataclass(frozen=True)
@@ -105,6 +169,13 @@ class Match:
     score: float  # 0.0 - 1.0
     # True when a different company scored the same, so the pick is arbitrary.
     ambiguous: bool = False
+    matched_alias: str | None = None  # the stored name the input matched
+
+
+def _q_number(wikidata_id: str) -> int:
+    """The number in a Wikidata id ("Q487494" -> 487494); unparseable ids sort last."""
+    digits = wikidata_id.lstrip("Q")
+    return int(digits) if digits.isdigit() else 2**62
 
 
 class Resolver:
@@ -122,7 +193,14 @@ class Resolver:
         self._scorer = scorer
         self._delay = delay_seconds
         self._choices: list[str] = []
+        self._aliases: list[str] = []
         self._owners: list[Entity] = []
+        # When the index was built; shown as the data's "as of" date.
+        self.as_of = (
+            dt.datetime.fromtimestamp(index_path.stat().st_mtime, dt.UTC)
+            .date()
+            .isoformat()
+        )
         for rec in records:
             entity = Entity(
                 wikidata_id=rec["wikidata_id"],
@@ -133,7 +211,11 @@ class Resolver:
                 identifier=rec.get("identifier"),
             )
             for alias in rec["aliases"]:
-                self._choices.append(normalize(alias))
+                normalized = normalize(alias)
+                if not normalized:  # a symbol-only alias would match any symbol
+                    continue
+                self._choices.append(normalized)
+                self._aliases.append(alias)
                 self._owners.append(entity)
         # Candidate positions per region, built once so a request only scores
         # the aliases inside the region it asked for.
@@ -155,7 +237,7 @@ class Resolver:
         if self._delay:
             time.sleep(self._delay)  # stand-in for a slow model; see discussion.md
         query = normalize(name)
-        if is_generic(name):
+        if not query or is_generic(name):
             return None
         rows = self._region_rows[region]
         found = process.extract(
@@ -177,14 +259,20 @@ class Resolver:
             if score == top
         }
         # Same name, several companies: prefer a top-level company over a subsidiary
-        # ("Siemens AG" -> Siemens, not Siemens Limited), then keep index order.
+        # ("Siemens AG" -> Siemens, not Siemens Limited), then the lowest Wikidata
+        # Q-number, since older and more notable entities were created first.
         ranked = sorted(
-            tied.values(), key=lambda i: self._owners[i].parent_company is not None
+            tied.values(),
+            key=lambda i: (
+                self._owners[i].parent_company is not None,
+                _q_number(self._owners[i].wikidata_id),
+            ),
         )
         return Match(
             entity=self._owners[ranked[0]],
             score=round(top / 100, 3),
             ambiguous=len(tied) > 1,
+            matched_alias=self._aliases[ranked[0]],
         )
 
     def candidates(

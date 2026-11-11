@@ -214,3 +214,10 @@ def test_result_headers_avoid_existing_column_names():
     assert heads[0] == "Resolver status (2)"
     assert heads[1] == "Canonical name (2)"
     assert len(set(h.lower() for h in heads)) == len(heads)
+
+
+def test_phone_numbers_and_dashes_are_not_neutralized():
+    assert tabular.neutralize("+1 479-273-4000") == "+1 479-273-4000"
+    assert tabular.neutralize("-") == "-"
+    assert tabular.neutralize("=1+1") == "'=1+1"
+    assert tabular.neutralize("+1+2") == "'+1+2"
