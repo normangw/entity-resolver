@@ -8,6 +8,7 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    build: str = "unknown"  # the deployed build id (BUILD_ID), unlike ``version``
 
 
 class ReadyResponse(BaseModel):
@@ -48,10 +49,40 @@ class ResolveResponse(BaseModel):
     headquarters: str | None
     country: str | None = None
     source: Literal["local", "gleif", "wikidata"] | None = None
-    # confidence is string similarity, not a probability. needs_review is set when
-    # two companies tie or the score is only just over the threshold.
+    # confidence is name similarity (0-1) between the input and the matched name,
+    # not the probability that the match is right. Local matches use RapidFuzz
+    # ``ratio``; Wikidata matches use ``WRatio``, so compare scores within a source.
+    # needs_review is set when two companies tie, the score is only just over the
+    # threshold, or the name is known to have been split or merged (see ``note``).
     confidence: float | None
     needs_review: bool = False
+    matched_alias: str | None = None  # the stored name the input matched on
+    as_of: str | None = None  # date the matched data was built (local) or fetched
+    note: str | None = None  # why this result needs a human look, if it does
+
+
+class BatchRequest(BaseModel):
+    """Several names resolved in one call; the limit is ``BATCH_MAX_NAMES``."""
+
+    company_names: list[str] = Field(min_length=1, max_length=1000)
+    language: Language = "en"
+    region: Region = "world"
+
+    @field_validator("company_names")
+    @classmethod
+    def clean_names(cls, names: list[str]) -> list[str]:
+        out = [n.strip() for n in names]
+        if any(not n or len(n) > 200 for n in out):
+            raise ValueError("each name must be 1 to 200 characters and not blank")
+        return out
+
+
+class BatchResponse(BaseModel):
+    """One result per input name, in order. Duplicates are resolved once."""
+
+    results: list[ResolveResponse]
+    unique_names: int
+    retry: int  # rows whose lookup was unavailable; send them again later
 
 
 class UploadResponse(BaseModel):
@@ -95,6 +126,7 @@ class SampleRow(BaseModel):
     canonical_name: str | None
     country: str | None
     confidence: float | None
+    needs_review: bool = False
 
 
 class UploadSummary(BaseModel):
@@ -111,6 +143,8 @@ class UploadSummary(BaseModel):
     checks: list[Check]
     passed: bool  # every check is ok
     retry: int = 0  # rows whose lookup was unavailable; resolve again to fill them
+    needs_review: int = 0  # resolved rows flagged "please review"
+    partial: bool = False  # some rows are still "retry", so the file is not complete
     notes: list[str] = Field(default_factory=list)  # caveats to show the user
     sample: list[SampleRow]
     download_name: str

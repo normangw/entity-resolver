@@ -45,6 +45,22 @@ cp .env.example .env
 | `UPLOAD_TTL_SECONDS` | `3600` | Uploads and results are deleted this long after upload |
 | `UPLOAD_MAX_RUNNING` | `3` | Files resolved at the same time; more get `429` |
 | `ALIAS_INDEX_PATH` | bundled `companies.json` | Local alias index loaded once at startup |
+| `API_KEY` | unset | Shared secret sent as the `X-API-Key` header. Unset means open (the public demo). When set it is required on `/resolve/batch` and `/metrics` |
+| `API_KEY_PROTECT_ALL` | `false` | Also require the key on `/resolve` and `/upload*`. The web page cannot send a key, so this turns the page off |
+| `RATE_LIMIT_RESOLVE_PER_MIN` | `120` | `/resolve` requests per client address per minute (`0` = no limit); over it, `429` with `Retry-After` |
+| `RATE_LIMIT_BATCH_PER_MIN` | `10` | Same for `/resolve/batch` |
+| `RATE_LIMIT_UPLOAD_PER_MIN` | `20` | Same for `/upload` and `/upload/{id}/resolve` |
+| `MAX_BODY_BYTES` | `262144` | Largest JSON body; over it, `413` (uploads have `UPLOAD_MAX_BYTES`) |
+| `BATCH_MAX_NAMES` | `100` | Most names per `/resolve/batch` call |
+| `BATCH_BUDGET_SECONDS` | `60` | After this long a batch stops calling Wikidata and marks the rest `retry` |
+| `WIKIDATA_MAX_CONCURRENT` | `4` | Wikidata lookups in flight at once across all requests |
+| `WIKIDATA_QUEUE_SECONDS` | `5` | How long a request waits for a Wikidata slot before a `503` |
+| `WIKIDATA_RETRIES` | `2` | Extra attempts per Wikidata API call for timeouts and 5xx, with exponential backoff and jitter. HTTP 429 is never retried |
+| `WIKIDATA_BREAKER_FAILURES` | `5` | Failed lookups in a row that open the circuit breaker |
+| `WIKIDATA_BREAKER_SECONDS` | `30` | How long the breaker stays open (lookups get an immediate `503`) before one probe is let through |
+| `LOG_FORMAT` | `json` | `json` (one object per line with a request id) or `text` |
+| `LOG_LEVEL` | `INFO` | Log level |
+| `BUILD_ID` | `unknown` | Reported as `build` by `/health`; set at image build time (see [Operating the service](#operating-the-service)) |
 
 ## Running the service
 
@@ -236,6 +252,25 @@ curl http://localhost:8000/upload/<id>/status
 curl -OJ http://localhost:8000/upload/<id>/download
 ```
 
+### `POST /resolve/batch`
+
+Resolve up to `BATCH_MAX_NAMES` (100) names in one call. Results come back in input order, each distinct name is resolved once, and a name whose Wikidata lookup is unavailable comes back with `status: "retry"` instead of failing the whole call. Send those names again later. After `BATCH_BUDGET_SECONDS` the call stops calling Wikidata and returns `retry` for names the local index cannot settle, so it ends inside the proxy's 120 s timeout. Needs the `X-API-Key` header when `API_KEY` is set.
+
+```bash
+curl -X POST http://localhost:8000/resolve/batch \
+  -H "Content-Type: application/json" -H "X-API-Key: $API_KEY" \
+  -d '{"company_names": ["Wal-Mart Stores Inc.", "YouTube", "Zyxwv Quantum Bakery"], "region": "world"}'
+```
+
+```json
+{"results": [{"input": "Wal-Mart Stores Inc.", "status": "resolved", "...": "..."}], "unique_names": 3, "retry": 0}
+```
+
+`422` for an empty list, more than `BATCH_MAX_NAMES` names, or a blank or over-200-character name.
+
+### `GET /metrics`
+Counters and request latency in Prometheus text format (not listed in `/docs`; `404` through the nginx proxy, so read it from inside: `docker compose exec api python -c "import urllib.request as u; print(u.urlopen('http://127.0.0.1:8000/metrics').read().decode())"`). Needs the API key when `API_KEY` is set. Series: `http_requests_total{method,path,status}` (route templates, never user text), `http_request_duration_seconds` (histogram), `resolutions_total{source,status}` (`source` is `local`, `wikidata`, `gleif` or `none`; a 503 is counted with its status code), `wikidata_unavailable_total`, `wikidata_busy_total` (requests that waited too long for a Wikidata slot), `rate_limited_total{scope}`, `auth_failures_total` and `process_uptime_seconds`. Counters reset when the process restarts.
+
 ### `GET /health`
 Check that the service is running.
 
@@ -244,8 +279,10 @@ curl http://localhost:8000/health
 ```
 
 ```json
-{"status": "ok", "version": "0.1.0"}
+{"status": "ok", "version": "0.1.0", "build": "a1b2c3d"}
 ```
+
+`version` comes from `pyproject.toml` and does not change between deployments. `build` is the `BUILD_ID` the image was built with (a commit hash, see [Operating the service](#operating-the-service)), so it tells you what is actually running. It is `unknown` if the image was built without one.
 
 ### `GET /ready`
 Check that the alias index has finished loading. The model loads in the background after startup, so `/health` answers as soon as the process is up, while `/ready` and `/resolve` return `503` until loading completes.
@@ -315,6 +352,44 @@ Answers to questions raised during user testing (issues #42 to #66).
 - **Size.** Spreadsheets are limited to `UPLOAD_MAX_ROWS` data rows (5,000 by default) and there is no resume: reloading the page loses the upload. Split larger lists.
 - **Evaluation.** `eval/README.md` scores the local index only, on queries that were also used to pick the 0.90 threshold. The live app also answers from Wikidata, so its accuracy on unlisted names is different, and `Instagram` is an example that resolves through Wikidata. Treat the published numbers as a ceiling for the local index, not a guarantee for the whole app. `docs/deliverable2/architecture.html` is the Deliverable 2 snapshot and still describes `WRatio` at 0.8 (95.8%); the current decision is `ratio` at 0.90.
 - **Spreadsheet versus single name.** Both use the same resolver and return the same fields; the spreadsheet adds a row status. Since `canonical_name` is always English, `上海航空` is `Shanghai Airlines` in both (the single-name card also shows the Chinese name as `label`).
+
+## Operating the service
+
+**Protection (all optional, set in `.env`).** The demo runs open. To lock it down: set `API_KEY` (batch and metrics need `X-API-Key`; add `API_KEY_PROTECT_ALL=true` for a script-only deployment), and tune the `RATE_LIMIT_*` values. Limits are per client address, in memory, per process, which fits the single container. Behind the nginx proxy the client address is the one nginx saw (it overwrites `X-Forwarded-For`; see below). JSON bodies over `MAX_BODY_BYTES` get `413` before they are read in full. At most `WIKIDATA_MAX_CONCURRENT` Wikidata lookups run at once; others wait up to `WIKIDATA_QUEUE_SECONDS` and then get `503`, so one script cannot exhaust Wikimedia's patience for everyone. The GLEIF daily budget is unchanged.
+
+**Resilience.** Timeouts and 5xx from Wikidata are retried with backoff and jitter. HTTP 429 and bad replies are not retried (that would worsen throttling) and, as before, return `503` rather than `unresolved`. After `WIKIDATA_BREAKER_FAILURES` failed lookups in a row the circuit breaker opens: for `WIKIDATA_BREAKER_SECONDS` lookups get an immediate `503` and Wikidata is left alone, then one probe is let through. Local-index matches are never affected. On shutdown the app stops running upload jobs and saves where each stopped.
+
+**Uploads survive a restart.** Each job writes `meta.json` and `cache.json` next to its files in `UPLOAD_DIR` (a named volume in `compose.yml`). After a restart, finished jobs can still be downloaded until `UPLOAD_TTL_SECONDS`, and a job that was running comes back as an error saying to resolve again. Resolving the same upload again reuses every answer except `retry` rows, so a second run only repeats the lookups Wikidata could not answer. `cache.json` holds the company names from the file, so it has the same lifetime and the same confidentiality as the upload itself.
+
+**Logs.** `LOG_FORMAT=json` writes one object per line: time, level, logger, message and `request_id`. Each request also gets one access line with the method, the route template (not the URL or query), the status and the duration. The id is returned in the `X-Request-ID` response header, and a valid incoming `X-Request-ID` is kept, so a request can be followed through nginx and the app. Company names, spreadsheet cells and file names are never logged; there is a test for it.
+
+**Deploying and verifying a build.**
+
+```bash
+BUILD_ID=$(git rev-parse --short HEAD) docker compose up -d --build
+curl http://$HOST/health        # "build" must equal the commit you meant to deploy
+docker compose ps               # api and proxy should both be "healthy"
+```
+
+**Container and proxy hardening.** The image is non-root (uid 1000), pinned to `python:3.12-slim-bookworm` and the uv `0.9.5` image, has a stdlib health check, and starts uvicorn with `--timeout-graceful-shutdown 20` (compose waits `stop_grace_period: 30s`). Compose sets memory, CPU and pid limits, `no-new-privileges`, drops all capabilities for the API, rotates container logs and adds a proxy health check. `nginx.conf` limits request rate and connections per IP, caps JSON bodies at 512 KB and uploads at 12 MB, drops slow clients, streams uploads without buffering, returns `404` for `/metrics`, and overwrites `X-Forwarded-For` with the real client address (appending to a client-supplied value would let anyone fake the address the app rate-limits on). **None of the compose or nginx changes has been run on a live host** (no Docker or nginx was available where they were written), so after the first start check `docker compose ps`, `docker compose exec proxy nginx -t`, an upload through port 80, and `docker compose logs api` for permission errors on `/data/uploads`. Base images are pinned by tag, not digest; pinning digests needs registry access.
+
+**Security review.** Checked and found sound: uploaded file names are used only for display and the download name (reduced to `[\w.\- ]` so they cannot reach the `Content-Disposition` header); job ids are random 128-bit hex checked against a pattern before touching the disk, and a job directory read back after a restart cannot point outside itself; uploads stream to disk under a size limit, with zip-bomb limits on `.xlsx` and read-only workbook loading; CSV and Excel cells that could run as formulas are neutralized; outbound requests go only to the fixed Wikidata and GLEIF hosts, with user text only as URL-encoded query values (no SSRF surface); no user text reaches logs, metric labels (route templates and a fixed set of methods only) or response headers. Known gaps: `openpyxl` parses `.xlsx` XML without `defusedxml` (not installed, and adding it needs a lock update), so a crafted file could use XML entity expansion up to the existing 200 MB uncompressed limit; the app has no TLS (terminate it in front, since the proxy listens on port 80); rate limits and the job store are per process, so running more than one API replica would multiply them.
+
+**Load test.** `scripts/loadtest.py` runs the real app in process with a fake Wikidata (it never touches the network):
+
+```bash
+PYTHONPATH=src uv run python scripts/loadtest.py --index data/companies.full.json
+```
+
+Measured on the author's Mac (one uvicorn-equivalent process, 32 client threads, full 14,127-company index, fake Wikidata at 50 ms per API call, 4 Wikidata slots; the TestClient adds overhead, so treat these as a floor for the service and not as network numbers):
+
+| Scenario | Throughput | p50 | p95 | p99 | Status codes |
+|---|---|---|---|---|---|
+| `/resolve`, names in the index (400) | 207 req/s | 149 ms | 190 ms | 216 ms | 400 x 200 |
+| `/resolve`, misses sent to Wikidata (200) | 66 req/s | 478 ms | 494 ms | 529 ms | 200 x 200 |
+| `/resolve/batch`, 24 names, 20 misses (20 calls, 8 threads) | 2.8 calls/s | 2.8 s | 3.0 s | 3.0 s | 20 x 200 |
+
+Local scoring is CPU-bound in worker threads, so it tops out near the core count of the machine. A miss costs one Wikidata API call at minimum (about 3 when a candidate is found) and is bounded by the slot cap: 4 slots at 50 ms per call allow about 80 misses per second at best, and real Wikidata latency is higher. In a separate overload run (bundled seed index, one slot, 200 ms per call, 80 + 40 requests from 32 threads) 15 requests waited the full 5 s for a slot and were shed as `503`, all counted by `wikidata_busy_total`; the rest were answered. Real Wikidata throttling will set the practical limit for names outside the index.
 
 ## Concurrency audit
 

@@ -241,7 +241,7 @@ def test_resolve_endpoint_falls_back_to_wikidata(monkeypatch):
     monkeypatch.setattr(settings, "wikidata_fallback", True)
     monkeypatch.setattr(
         "entity_resolver.main.WikidataClient",
-        lambda timeout, threshold, cache_ttl: WikidataClient(
+        lambda timeout, threshold, **kw: WikidataClient(
             timeout, threshold, fetch=YOUTUBE
         ),
     )
@@ -363,9 +363,7 @@ def test_resolve_endpoint_returns_503_when_wikidata_is_down(monkeypatch):
     monkeypatch.setattr(settings, "wikidata_fallback", True)
     monkeypatch.setattr(
         "entity_resolver.main.WikidataClient",
-        lambda timeout, threshold, cache_ttl: WikidataClient(
-            timeout, threshold, fetch=down
-        ),
+        lambda timeout, threshold, **kw: WikidataClient(timeout, threshold, fetch=down),
     )
     with TestClient(app) as client:
         wait_ready(client)
@@ -378,7 +376,7 @@ def test_resolve_endpoint_skips_wikidata_for_a_region_filter(monkeypatch):
     monkeypatch.setattr(settings, "wikidata_fallback", True)
     monkeypatch.setattr(
         "entity_resolver.main.WikidataClient",
-        lambda timeout, threshold, cache_ttl: WikidataClient(
+        lambda timeout, threshold, **kw: WikidataClient(
             timeout, threshold, fetch=YOUTUBE
         ),
     )
@@ -449,3 +447,26 @@ def test_translated_name_goes_in_label_and_canonical_stays_english():
     assert match is not None
     assert match.entity.canonical_name == "Huawei"
     assert match.entity.label == "华为"
+
+
+def test_search_is_always_english_and_reads_more_hits():
+    seen: list[dict[str, str]] = []
+    base = YOUTUBE
+
+    def spy(params: dict[str, str]) -> dict[str, Any]:
+        if params["action"] == "wbsearchentities":
+            seen.append(params)
+        return base(params)
+
+    WikidataClient(fetch=spy).lookup("YouTube", language="ja")
+    assert seen[0]["language"] == "en"
+    assert int(seen[0]["limit"]) > 8
+
+
+def test_buildings_and_universities_are_not_companies():
+    fetch = fake_wikidata(
+        [hit("Q9188", "Empire State Building")],
+        {"Q9188": {"P127": [statement("Q1")], "P31": [statement("Q11303")]}},
+        {"Q1": "Empire State Realty Trust"},
+    )
+    assert WikidataClient(fetch=fetch).lookup("Empire State Building") is None

@@ -13,8 +13,10 @@ cached, so a throttled name is retried on the next call.
 
 import json
 import logging
+import random
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
@@ -39,6 +41,36 @@ _COMPANY_PROPS = (*_PARENT_PROPS, _HQ_PROP, "P452")  # P452 = industry
 _END_TIME = "P582"
 _SHARE = "P1107"  # proportion: the fraction of the entity an owner holds
 _HUMAN = "Q5"
+_INSTANCE_OF = "P31"
+# Things Wikidata gives an owner or a location that are not companies (the Empire
+# State Building has an owner and Georgetown has a headquarters). A hit whose
+# "instance of" is one of these is skipped. Not exhaustive: it lists the classes
+# testers hit, and a company tagged only with other classes still passes.
+_NOT_COMPANY_CLASSES = frozenset(
+    {
+        "Q41176",
+        "Q11303",
+        "Q1021645",  # building, skyscraper, office building
+        "Q3918",
+        "Q38723",
+        "Q902104",
+        "Q875538",  # university, higher education,
+        "Q62078547",
+        "Q1371037",
+        "Q15936437",
+        "Q23002054",  # private/public ones
+        "Q484652",
+        "Q245065",  # international / intergovernmental organization
+        "Q327333",
+        "Q7278",
+        "Q33506",  # government agency, political party, museum
+        "Q163740",
+        "Q79913",  # nonprofit organization, NGO
+    }
+)
+# How many search hits to read. Few hits let other meanings of a common word
+# ("Mars" the planet) crowd out the company.
+_SEARCH_LIMIT = "25"
 # "owned by" (P127) also records shareholders, so it only counts as a parent when
 # the owner holds at least this fraction (statements with no stake stay in).
 _MIN_OWNER_SHARE = 0.5
@@ -66,6 +98,64 @@ def _http_fetch(timeout: float) -> Fetch:
 
 class WikidataUnavailable(Exception):
     """Wikidata could not be reached, throttled us, or sent an unusable reply."""
+
+
+def _retryable(exc: Exception) -> bool:
+    """True for a timeout, a dropped connection or a 5xx, which may pass.
+
+    A 429 or 4xx is not retried: hammering a throttling server makes it worse, and
+    the caller reports it as a 503 by design. A bad JSON body is not retried either.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500
+    return isinstance(exc, OSError)
+
+
+class CircuitBreaker:
+    """Stops calling a failing service for a while.
+
+    After ``threshold`` failures in a row it opens for ``cooldown`` seconds, during
+    which ``allow`` is False; then one call is let through, and a success closes it.
+    """
+
+    def __init__(
+        self,
+        threshold: int = 5,
+        cooldown: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._threshold = threshold
+        self._cooldown = cooldown
+        self._clock = clock
+        self._failures = 0
+        self._opened_at: float | None = None
+        self._lock = threading.Lock()
+
+    def allow(self) -> bool:
+        with self._lock:
+            if self._opened_at is None:
+                return True
+            if self._clock() - self._opened_at >= self._cooldown:
+                # Half open: let this call probe, and keep others out until it ends.
+                self._opened_at = self._clock()
+                return True
+            return False
+
+    def success(self) -> None:
+        with self._lock:
+            self._failures = 0
+            self._opened_at = None
+
+    def failure(self) -> None:
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self._threshold:
+                self._opened_at = self._clock()
+
+    @property
+    def is_open(self) -> bool:
+        with self._lock:
+            return self._opened_at is not None
 
 
 def _share(statement: dict[str, Any]) -> float | None:
@@ -115,10 +205,23 @@ class WikidataClient:
         cache_ttl: float = 3600,
         cache_size: int = 1024,
         clock: Callable[[], float] = time.monotonic,
+        retries: int = 0,
+        backoff: float = 0.25,
+        sleep: Callable[[float], None] = time.sleep,
+        breaker: CircuitBreaker | None = None,
     ) -> None:
-        """``cache_ttl`` is in seconds; 0 turns the cache off."""
+        """``cache_ttl`` is in seconds; 0 turns the cache off.
+
+        ``retries`` extra attempts (with exponential backoff and jitter) are made
+        for timeouts and 5xx on each request; ``breaker`` short-circuits lookups
+        while Wikidata keeps failing.
+        """
         self._threshold = threshold
-        self._fetch = fetch or _http_fetch(timeout)
+        self._raw_fetch = fetch or _http_fetch(timeout)
+        self._retries = retries
+        self._backoff = backoff
+        self._sleep = sleep
+        self.breaker = breaker or CircuitBreaker(threshold=10**9)
         self._ttl = cache_ttl
         self._max_entries = cache_size
         self._clock = clock
@@ -140,11 +243,16 @@ class WikidataClient:
             if cached is not None and self._clock() - cached[0] < self._ttl:
                 self._cache.move_to_end(key)
                 return cached[1]
+        if not self.breaker.allow():
+            raise WikidataUnavailable("circuit open: Wikidata keeps failing")
         try:
             match = self._lookup(name, language)
         except (OSError, ValueError) as exc:  # network failure or bad JSON
-            logger.warning("Wikidata lookup failed for %r: %s", name, exc)
+            # The name is user input, so it is not logged.
+            logger.warning("Wikidata lookup failed: %s", exc)
+            self.breaker.failure()
             raise WikidataUnavailable(str(exc)) from exc
+        self.breaker.success()
         if self._ttl > 0:
             with self._lock:
                 self._cache[key] = (self._clock(), match)
@@ -153,15 +261,29 @@ class WikidataClient:
                     self._cache.popitem(last=False)
         return match
 
+    def _fetch(self, params: dict[str, str]) -> dict[str, Any]:
+        """One API call, retried on timeouts and 5xx with backoff and jitter."""
+        for attempt in range(self._retries + 1):
+            try:
+                return self._raw_fetch(params)
+            except Exception as exc:
+                if attempt == self._retries or not _retryable(exc):
+                    raise
+                delay = self._backoff * 2**attempt
+                self._sleep(delay * (0.5 + random.random()))  # noqa: S311
+        raise AssertionError("unreachable")  # pragma: no cover
+
     def _lookup(self, name: str, language: str) -> Match | None:
+        # Always search in English so the same name finds the same company whatever
+        # the display language is; ``language`` only chooses the labels we return.
         hits = self._fetch(
             {
                 "action": "wbsearchentities",
                 "search": name,
-                "language": language,
-                "uselang": language,
+                "language": "en",
+                "uselang": "en",
                 "type": "item",
-                "limit": "8",
+                "limit": _SEARCH_LIMIT,
             }
         )["search"]
         wanted = normalize(name)
@@ -188,6 +310,9 @@ class WikidataClient:
         for hit, score in scored:
             entity = entities[hit["id"]]
             claims = entity.get("claims", {})
+            kinds = set(_statement_ids(claims, _INSTANCE_OF, include_ended=True))
+            if kinds & _NOT_COMPANY_CLASSES:
+                continue
             if any(prop in claims for prop in _COMPANY_PROPS):
                 links = len(entity.get("sitelinks", {}))
                 companies.append((score, links, hit, claims))

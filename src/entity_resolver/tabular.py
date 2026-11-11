@@ -36,6 +36,9 @@ MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 200
 
 _FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+# A phone number ("+1 479-273-4000") or a lone dash is not a formula, so it keeps
+# its text. Excel reads a "+" number as text when the cell is typed in a CSV.
+_PHONE = re.compile(r"\+\d[\d\s().-]*|-")
 _NUMBER = re.compile(r"[+-]?(\d[\d,]*\.?\d*|\.\d+)([eE][+-]?\d+)?%?")
 
 RESULT_COLUMNS = (
@@ -47,6 +50,7 @@ RESULT_COLUMNS = (
     "Country",
     "Confidence",
     "Source",
+    "Needs review",
 )
 
 
@@ -295,6 +299,7 @@ def neutralize(value: Any) -> Any:
         isinstance(value, str)
         and value.startswith(_FORMULA_TRIGGERS)
         and not _NUMBER.fullmatch(value.strip())
+        and not _PHONE.fullmatch(value.strip())
     ):
         return "'" + value
     return value

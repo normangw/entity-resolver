@@ -373,3 +373,27 @@ def test_busy_wikidata_marks_rows_retry_and_keeps_local_matches(client):
     assert status["state"] == "done"
     assert s["resolved"] == 1 and s["retry"] == 2
     assert any("retry" in n for n in s["notes"])
+
+
+def test_column_picker_prefers_supplier_over_a_contact_name():
+    from entity_resolver.uploads import suggest_column
+
+    assert suggest_column(["Vendor ID", "Contact Name", "Supplier", "Phone"]) == 2
+    assert suggest_column(["ID", "Contact Name", "Company Name"]) == 2
+    assert suggest_column(["ID", "Name"]) == 1
+    assert suggest_column(["ID", "Contact Name"]) == 0
+
+
+def test_summary_counts_review_rows_and_flags_a_partial_job(client, monkeypatch):
+    monkeypatch.setattr(
+        "entity_resolver.main.note_for",
+        lambda name: "split" if "apple" in name.lower() else None,
+    )
+    rows = [["Company"], ["Apple Inc."], ["Wal-Mart Stores Inc."]]
+    job = upload(client, csv_bytes(rows), "a.csv").json()["id"]
+    run_job(client, job, column=0)
+    summary = wait_done(client, job)["summary"]
+    assert summary["needs_review"] >= 1
+    assert summary["partial"] is False
+    text = client.get(f"/upload/{job}/download").text
+    assert "Needs review" in text.splitlines()[0]

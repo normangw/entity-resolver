@@ -13,7 +13,9 @@
 # Dependencies: none yet (no database, vector store or cache), so compose.yml
 #   runs this one service.
 
-FROM python:3.12-slim
+# Pinned to the Debian release so a new base distro never arrives unannounced.
+# For fully reproducible builds pin the digest too (docker buildx imagetools inspect).
+FROM python:3.12-slim-bookworm
 
 # uv, pinned, copied from its official image.
 COPY --from=ghcr.io/astral-sh/uv:0.9.5 /uv /uvx /bin/
@@ -24,8 +26,12 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
-# Non-root user that owns the app directory.
-RUN useradd --create-home --uid 1000 app
+# Non-root user that owns the app directory and the upload directory. The upload
+# directory is a volume in compose.yml, so spreadsheet jobs survive a restart.
+RUN useradd --create-home --uid 1000 app \
+    && mkdir -p /data/uploads \
+    && chown -R app:app /data
+ENV UPLOAD_DIR=/data/uploads
 WORKDIR /app
 RUN chown app:app /app
 USER app
@@ -40,6 +46,11 @@ COPY --chown=app:app README.md ./
 COPY --chown=app:app src ./src
 RUN uv sync --frozen --no-dev
 
+# Which commit this image was built from; /health reports it so a deployment can be
+# verified:  docker compose build --build-arg BUILD_ID=$(git rev-parse --short HEAD)
+ARG BUILD_ID=unknown
+ENV BUILD_ID=${BUILD_ID}
+
 EXPOSE 8000
 
 # python:3.12-slim has no curl, so the health check uses the standard library.
@@ -48,5 +59,8 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 
 # --proxy-headers makes uvicorn read the client address and scheme the proxy
 # forwards. Trusting any sender is safe here because port 8000 is not published.
+# --timeout-graceful-shutdown lets running requests finish and the app save its
+# upload jobs before the container stops (compose waits stop_grace_period for it).
 CMD ["uvicorn", "entity_resolver.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--proxy-headers", "--forwarded-allow-ips", "*", \
+     "--no-server-header", "--timeout-graceful-shutdown", "20"]

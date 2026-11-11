@@ -180,3 +180,100 @@ def test_unique_match_is_not_ambiguous(tmp_path):
     resolver = Resolver(_index(tmp_path, [_rec("Q1", "Walmart", ["Walmart"])]))
     match = resolver.resolve("Walmart")
     assert match is not None and not match.ambiguous
+
+
+def make_index(tmp_path: Path, records: list[dict]) -> Path:
+    path = tmp_path / "index.json"
+    path.write_text(json.dumps(records), encoding="utf-8")
+    return path
+
+
+def rec(qid: str, name: str, aliases: list[str], parent: str | None = None) -> dict:
+    return {
+        "wikidata_id": qid,
+        "canonical_name": name,
+        "parent_company": parent,
+        "headquarters": None,
+        "country": "US",
+        "aliases": aliases,
+    }
+
+
+def test_symbol_only_and_placeholder_input_is_unresolved(tmp_path):
+    # Bitcoin's alias is a bare symbol that normalizes to nothing (#75).
+    resolver = Resolver(
+        make_index(
+            tmp_path,
+            [
+                rec("Q1", "Bitcoin", ["₿", "?"]),
+                rec("Q2", "AT&T", ["T", "AT&T"]),
+                rec("Q3", "Visa", ["V", "Visa"]),
+            ],
+        )
+    )
+    for junk in ["\U0001f600", "?", ">", "-", "???", "T", "V", "X", "TBD", "N/A"]:
+        assert resolver.resolve(junk) is None, junk
+    assert resolver.resolve("Visa") is not None
+
+
+def test_same_name_ties_go_to_the_lowest_q_number(tmp_path):
+    resolver = Resolver(
+        make_index(
+            tmp_path,
+            [
+                rec("Q900", "Tesco Japan", ["Tesco Group"]),
+                rec("Q487494", "Tesco", ["Tesco Group"]),
+                rec("Q50", "Tesco Elder", ["Tesco Group"]),
+            ],
+        )
+    )
+    match = resolver.resolve("Tesco Group")
+    assert match is not None
+    assert match.entity.wikidata_id == "Q50"
+    assert match.ambiguous
+
+
+def test_a_top_level_company_still_beats_a_lower_q_subsidiary(tmp_path):
+    resolver = Resolver(
+        make_index(
+            tmp_path,
+            [
+                rec("Q10", "Siemens Limited", ["Siemens"], parent="Siemens"),
+                rec("Q99", "Siemens", ["Siemens"]),
+            ],
+        )
+    )
+    match = resolver.resolve("Siemens")
+    assert match is not None
+    assert match.entity.wikidata_id == "Q99"
+
+
+def test_match_reports_the_alias_it_matched_on(tmp_path):
+    resolver = Resolver(
+        make_index(tmp_path, [rec("Q1", "Meta Platforms", ["Facebook", "Meta"])])
+    )
+    match = resolver.resolve("facebook inc")
+    assert match is not None
+    assert match.matched_alias == "Facebook"
+    assert len(resolver.as_of) == 10  # an ISO date
+
+
+def test_variants_strip_vendor_numbers_cities_and_dba():
+    from entity_resolver.resolver import variants
+
+    assert "Walmart" in variants("Walmart, Bentonville AR")
+    assert "Microsoft Corp" in variants("Microsoft Corp - Redmond, WA")
+    assert "Microsoft Corporation" in variants("Microsoft Corporation (Vendor #4471)")
+    assert variants("Walmart Inc. d/b/a Sam's Club") == [
+        "Walmart Inc. d/b/a Sam's Club",
+        "Walmart Inc.",
+        "Sam's Club",
+    ]
+    assert variants("Apple Inc.") == ["Apple Inc."]
+
+
+def test_split_companies_carry_a_review_note():
+    from entity_resolver.resolver import note_for
+
+    assert "GE Vernova" in (note_for("General Electric") or "")
+    assert note_for("Apple") is None
