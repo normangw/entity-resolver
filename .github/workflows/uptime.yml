@@ -1,0 +1,27 @@
+# Scheduled uptime check. Runs scripts/monitor.py against the deployed app and fails
+# the run (GitHub emails the repo's watchers) when the app is down, not ready, giving
+# wrong answers or too slow.
+#
+# Jetstream changes the public address on every unshelve, so this reads the address
+# from the repository variable APP_URL (Settings > Secrets and variables > Actions >
+# Variables). Update it after each unshelve. If it is not set the job does nothing.
+name: uptime
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    if: ${{ vars.APP_URL != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/monitor.py "${{ vars.APP_URL }}"

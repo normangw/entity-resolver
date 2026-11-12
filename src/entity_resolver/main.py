@@ -317,35 +317,31 @@ def _retry_response(name: str) -> ResolveResponse:
     )
 
 
-def _upload_resolver(
-    state, region: str, language: str = "en", retry_delay: float = 1.0
-):
-    """A resolve function for upload jobs that survives a busy Wikidata.
+def _upload_resolver(state, region: str, language: str = "en"):
+    """A resolve function for upload and batch jobs that survives a busy Wikidata.
 
-    A 503 is retried once. After three rows still failing, names the local index
-    cannot settle are marked ``retry`` at once instead of waiting on Wikidata, so
-    local matches are never lost and the job finishes.
+    This function never retries a lookup: the Wikidata client is the one place that
+    retries (with backoff and jitter) and it has a circuit breaker. A name whose
+    lookup still fails is marked ``retry`` so the caller can send it again later.
+    After three such rows, names the local index cannot settle are marked ``retry``
+    at once instead of waiting on Wikidata, so local matches are never lost and the
+    job finishes.
     """
     failures = 0
-
-    retry_row = _retry_response
 
     async def resolve_one(name: str) -> ResolveResponse:
         nonlocal failures
         if failures >= 3:
             local = await asyncio.to_thread(state.resolver.resolve, name, region)
             if local is None:
-                return retry_row(name)
-        for attempt in range(2):
-            try:
-                return await resolve_name(state, name, region, language)
-            except HTTPException as exc:
-                if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
-                    raise
-                if attempt == 0:
-                    await asyncio.sleep(retry_delay)
+                return _retry_response(name)
+        try:
+            return await resolve_name(state, name, region, language)
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+                raise
         failures += 1
-        return retry_row(name)
+        return _retry_response(name)
 
     return resolve_one
 
@@ -389,7 +385,7 @@ async def resolve_batch(body: BatchRequest, request: Request) -> BatchResponse:
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"At most {settings.batch_max_names} names per call.",
         )
-    resolve_one = _upload_resolver(state, body.region, body.language, retry_delay=0.2)
+    resolve_one = _upload_resolver(state, body.region, body.language)
     answers: dict[str, ResolveResponse] = {}
     deadline = time.monotonic() + settings.batch_budget_seconds
     for name in body.company_names:

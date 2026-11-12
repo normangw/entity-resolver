@@ -433,3 +433,19 @@ uv run ruff check .       # lint
 uv run ruff format .      # format
 uv run mypy src/          # type check
 ```
+
+## Backup and restore
+
+The alias index (`data/companies.full.json`) takes about 20 minutes to rebuild and is git-ignored, so it lives only where it was built. Keep a verified copy somewhere other than that machine (a GitHub release asset, a Jetstream volume snapshot, a cloud bucket).
+
+```bash
+python scripts/backup_index.py backup data/companies.full.json backups/   # writes backups/alias-index-<build date>.tar.gz and verifies it
+python scripts/backup_index.py verify backups/alias-index-20261027.tar.gz # checksum and index check only
+python scripts/backup_index.py restore backups/alias-index-20261027.tar.gz data/
+```
+
+The archive holds the index, its metadata and a SHA-256 manifest. `restore` refuses a damaged archive, checks that the index loads, and writes atomically. After restoring on the instance, copy the file to `src/entity_resolver/data/companies.json` and rebuild as in the deployment steps (`docker compose down -v` if the volume holds an old index). Uploads are temporary by design and are not backed up. The tests do a backup, a restore and a corrupted-archive case; the restore was also checked byte for byte against the real index.
+
+## Monitoring
+
+`scripts/monitor.py <url>` is an automated first check. It reads `/health` (and shows the build id), `/ready`, resolves a known name (Lyft) and a made-up one (which must stay unresolved), and fails if any is wrong or the p50 or p95 latency passes a limit (defaults 1000 ms and 3000 ms). A 503 from a busy Wikidata is a warning, not a failure. It exits non-zero and can post to a webhook (`--webhook-env NAME`). The scheduled workflow `.github/workflows/uptime.yml` runs it every 30 minutes against the repository variable `APP_URL`; set it in GitHub (Settings, Secrets and variables, Actions, Variables) and update it after every unshelve, since Jetstream changes the address. Without `APP_URL` the job does nothing. A person steps in when it fails or when users report a problem; `docs/postmortem-tester-findings.md` is an example of the follow-up. `scripts/loadtest.py` finds where the app slows down, using a fake Wikidata.
