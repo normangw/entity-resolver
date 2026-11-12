@@ -327,3 +327,22 @@ def test_unknown_language_is_rejected():
         wait_ready(client)
         r = client.post("/resolve", json={"company_name": "Walmart", "language": "xx"})
     assert r.status_code == 422
+
+
+def test_upload_resolver_does_not_retry_a_failed_lookup(monkeypatch):
+    """Retrying belongs to the Wikidata client alone: one call per name here."""
+    from fastapi import HTTPException
+
+    from entity_resolver import main
+
+    calls: list[str] = []
+
+    async def always_unavailable(state, name, region, language="en"):
+        calls.append(name)
+        raise HTTPException(503, "Wikidata is unavailable; retry shortly")
+
+    monkeypatch.setattr(main, "resolve_name", always_unavailable)
+    resolve_one = main._upload_resolver(object(), "world")
+    results = [asyncio.run(resolve_one(n)) for n in ["A Co", "B Co"]]
+    assert calls == ["A Co", "B Co"]
+    assert [r.status for r in results] == ["retry", "retry"]
