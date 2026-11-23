@@ -1,0 +1,38 @@
+# Known-good answers for the full index (data/companies.full.json, 14,127 companies,
+# built 2026-10-27) with the Wikidata fallback on. scripts/deploy.sh runs these after
+# every deploy:
+#   python3 scripts/monitor.py http://127.0.0.1 --smoke eval/smoke.jsonl
+# One JSON object per line: company_name (and optional region/language) is sent; every
+# other key must match the answer exactly. A case that expects "source": "local" is
+# answered from the index, so a 503 there fails the deploy; any other case may need
+# Wikidata, so a 503 is retried and then only a warning. The seed-index set CI uses is
+# eval/smoke-seed.jsonl. Every answer below was checked against the full index and,
+# for the Wikidata cases, a live lookup on 2026-11-23; tests/test_smoke_file.py
+# re-checks the local ones offline whenever the full index is present.
+#
+# Local index: exact names and a legal-name variant.
+{"company_name": "Lyft", "status": "resolved", "source": "local", "canonical_name": "Lyft", "wikidata_id": "Q17077936"}
+{"company_name": "Wal-Mart Stores Inc.", "status": "resolved", "source": "local", "canonical_name": "Walmart", "wikidata_id": "Q483551"}
+# Typos: resolved, but below 0.95 similarity so flagged for review.
+{"company_name": "Deutsche Telecom", "status": "resolved", "source": "local", "canonical_name": "Deutsche Telekom", "wikidata_id": "Q9396", "needs_review": true}
+{"company_name": "Meta Platfroms", "status": "resolved", "source": "local", "canonical_name": "Meta Platforms", "wikidata_id": "Q380", "needs_review": true}
+# Non-English aliases stored in the index (Chinese, Japanese, Korean).
+{"company_name": "沃尔玛", "status": "resolved", "source": "local", "canonical_name": "Walmart", "wikidata_id": "Q483551"}
+{"company_name": "トヨタ自動車", "status": "resolved", "source": "local", "canonical_name": "Toyota", "wikidata_id": "Q53268"}
+{"company_name": "삼성전자", "status": "resolved", "source": "local", "canonical_name": "Samsung Electronics", "wikidata_id": "Q20718"}
+# Same name, two companies. Broadcom: the top-level company (Q790060) beats its
+# subsidiary (Q555925). El Pollo Loco: both top-level, so the lower Q-number wins.
+{"company_name": "Broadcom", "status": "resolved", "source": "local", "canonical_name": "Broadcom", "wikidata_id": "Q790060", "needs_review": true}
+{"company_name": "El Pollo Loco", "status": "resolved", "source": "local", "canonical_name": "El Pollo Loco", "wikidata_id": "Q2353849", "needs_review": true}
+# Same name in two countries: the region filter picks one.
+{"company_name": "Ferguson Enterprises", "region": "gb", "status": "resolved", "source": "local", "wikidata_id": "Q624682", "country": "GB"}
+{"company_name": "Ferguson Enterprises", "region": "us", "status": "resolved", "source": "local", "wikidata_id": "Q5444235", "country": "US"}
+# Not in the index: the Wikidata fallback finds the company and its parent.
+{"company_name": "YouTube", "status": "resolved", "source": "wikidata", "canonical_name": "YouTube", "wikidata_id": "Q866", "parent_company": "Google"}
+{"company_name": "Beats Electronics", "status": "resolved", "source": "wikidata", "canonical_name": "Beats Electronics", "wikidata_id": "Q1961036", "parent_company": "Apple Inc."}
+{"company_name": "上海航空", "status": "resolved", "source": "wikidata", "canonical_name": "Shanghai Airlines", "wikidata_id": "Q721994", "parent_company": "China Eastern Airlines"}
+# Must stay unresolved: gibberish, a placeholder, a phrase and a person.
+{"company_name": "Zyxwv Quantum Bakery", "status": "unresolved", "canonical_name": null}
+{"company_name": "TBD", "status": "unresolved", "canonical_name": null}
+{"company_name": "the weather tomorrow", "status": "unresolved", "canonical_name": null}
+{"company_name": "John Smith", "status": "unresolved", "canonical_name": null}
