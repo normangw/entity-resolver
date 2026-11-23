@@ -27,6 +27,18 @@ def test_health_returns_ok():
     assert "version" in data
 
 
+def test_health_version_is_the_one_in_pyproject():
+    """The version lives only in pyproject.toml; /health and /docs both report it."""
+    import tomllib
+    from pathlib import Path
+
+    pyproject = Path(__file__).parents[1] / "pyproject.toml"
+    expected = tomllib.loads(pyproject.read_text())["project"]["version"]
+    with TestClient(app) as client:
+        assert client.get("/health").json()["version"] == expected
+        assert client.get("/openapi.json").json()["info"]["version"] == expected
+
+
 def test_ready_after_startup():
     """/ready returns 200 once the lifespan has loaded the resolver."""
     with TestClient(app) as client:

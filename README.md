@@ -28,7 +28,6 @@ cp .env.example .env
 | Variable | Default | Description |
 |---|---|---|
 | `APP_NAME` | `Entity Resolver API` | Name of the service |
-| `APP_VERSION` | `0.1.0` | Version string |
 | `DEBUG` | `false` | Enable debug mode |
 | `WIKIDATA_TIMEOUT` | `10` | Timeout in seconds for Wikidata requests |
 | `WIKIDATA_FALLBACK` | `true` | When a name is not in the local index, ask Wikidata (resolves subsidiaries such as YouTube or Beats Electronics). The test suite sets it to `false` (see `tests/conftest.py`) so CI stays offline. Set `false` to run fully offline |

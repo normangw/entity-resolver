@@ -1,0 +1,12 @@
+# Known-good answers for the bundled 5-company seed index, with the Wikidata fallback
+# off. CI runs these against every image it builds:
+#   python scripts/monitor.py http://127.0.0.1:8000 --smoke eval/smoke-seed.jsonl
+# One JSON object per line: company_name (and optional region/language) is sent; every
+# other key must match the answer exactly. The full-index set is eval/smoke.jsonl.
+{"company_name": "Wal-Mart Stores", "status": "resolved", "canonical_name": "Walmart", "wikidata_id": "Q483551"}
+{"company_name": "apple inc", "status": "resolved", "canonical_name": "Apple Inc.", "wikidata_id": "Q312"}
+{"company_name": "Google LLC", "status": "resolved", "canonical_name": "Google", "parent_company": "Alphabet Inc."}
+{"company_name": "上海航空", "status": "resolved", "canonical_name": "Shanghai Airlines", "parent_company": "China Eastern Airlines"}
+{"company_name": "Zyxwv Quantum Bakery", "status": "unresolved", "canonical_name": null}
+{"company_name": "the weather tomorrow", "status": "unresolved"}
+{"company_name": "John Smith", "status": "unresolved"}

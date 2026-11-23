@@ -1,24 +1,41 @@
+# Continuous integration. On every push and pull request:
+#   1. test    - install from uv.lock, ruff (lint + format), mypy, pytest
+#   2. secrets - gitleaks over the whole Git history
+#   3. image   - build the container image and smoke-test it against fixed answers
+#                (eval/smoke-seed.jsonl) before trusting it; on main only, publish it
+#                to the GitHub Container Registry as ghcr.io/<repo>:<commit sha> and
+#                :main. Pull requests build and test the image but never push.
+# Releases (version tags) are retagged from these images by release.yml.
+#
+# Every action is pinned to a commit SHA (the tag is in the comment), so a moved tag
+# cannot change what runs here.
 name: ci
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
-
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
-      - name: Install dependencies
+      - name: Install from the lock file
         run: uv sync --extra dev --frozen
 
       - name: Lint with ruff
@@ -32,3 +49,88 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the whole history, not just this commit
+
+      - name: Scan the Git history for secrets (gitleaks v8.30.1)
+        run: >
+          docker run --rm -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git /repo --redact --verbose
+
+  image:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io (used on main only)
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read the version from pyproject.toml
+        id: meta
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build the image
+        run: >
+          docker build
+          --build-arg BUILD_ID=${{ steps.meta.outputs.short }}
+          --label org.opencontainers.image.revision=${{ github.sha }}
+          --label org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          -t "$IMAGE:${{ github.sha }}" .
+
+      # Development profile with the bundled 5-company seed index and no network
+      # lookups, so the answers are fixed and the check needs no secrets.
+      - name: Start the image
+        run: >
+          docker run -d --name smoke -p 127.0.0.1:8000:8000
+          -e ENVIRONMENT=development -e WIKIDATA_FALLBACK=false -e GLEIF_ENABLED=false
+          "$IMAGE:${{ github.sha }}"
+
+      # Both the image's own HEALTHCHECK (first run after its 30 s interval) and
+      # /ready (the index has loaded) must pass within two minutes.
+      - name: Wait until the container is healthy and ready
+        run: |
+          for _ in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' smoke)
+            ready=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:8000/ready || true)
+            echo "health: $state, /ready: $ready"
+            [ "$state" = healthy ] && [ "$ready" = 200 ] && exit 0
+            sleep 2
+          done
+          docker logs smoke
+          exit 1
+
+      - name: Smoke-test the image against known answers
+        run: >
+          python3 scripts/monitor.py http://127.0.0.1:8000
+          --smoke eval/smoke-seed.jsonl
+          --expect-version ${{ steps.meta.outputs.version }}
+
+      - name: Show the container logs if anything failed
+        if: failure()
+        run: docker logs smoke
+
+      - name: Log in to the GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish the tested image as :<sha> and :main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:main"
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:main"
+          docker inspect -f '{{index .RepoDigests 0}}' "$IMAGE:${{ github.sha }}" | tee -a "$GITHUB_STEP_SUMMARY"

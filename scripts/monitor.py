@@ -6,6 +6,7 @@ notices before users do. Standard library only, so it runs anywhere.
 
     python scripts/monitor.py http://149.165.159.230
     python scripts/monitor.py http://host --samples 20 --p95-ms 1500 --webhook-env HOOK
+    python scripts/monitor.py http://host --smoke eval/smoke.jsonl --expect-version 1.0
 
 What it checks:
   * /health answers ok and reports a build id (shown, so you can see what is deployed)
@@ -15,6 +16,15 @@ What it checks:
   * the p50 and p95 latency of those lookups stay under the limits
 A 503 "Wikidata is busy" on the canary is reported as a warning, not a failure, since
 that is the designed behavior under throttling.
+
+With ``--smoke FILE`` the canaries are replaced by a fixed set of known-good answers,
+one JSON object per line: ``company_name`` (plus optional ``region`` and ``language``)
+is sent, and every other key is an expected field of the answer, for example
+``{"company_name": "YouTube", "status": "resolved", "parent_company": "Google"}``.
+Each case runs once. CI runs ``eval/smoke-seed.jsonl`` against the image it built and
+``scripts/deploy.sh`` runs ``eval/smoke.jsonl`` after every deploy, so answers that get
+worse are caught even when every status code is 200. ``--expect-version`` also checks
+the version /health reports.
 
 The Jetstream address changes whenever the instance is unshelved, so pass the current
 one each time (or set the APP_URL variable the scheduled workflow reads).
@@ -30,8 +40,41 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-# (name sent, status expected). Lyft is in the index; the other must never resolve.
-CANARIES = (("Lyft", "resolved"), ("Zyxwv Quantum Bakery", "unresolved"))
+# Lyft is in the index; the other name must never resolve.
+CANARIES: tuple[dict[str, str], ...] = (
+    {"company_name": "Lyft", "status": "resolved"},
+    {"company_name": "Zyxwv Quantum Bakery", "status": "unresolved"},
+)
+# Keys of a case that are sent with the request; every other key is an expectation.
+REQUEST_KEYS = ("company_name", "region", "language")
+
+
+def load_cases(path: str) -> list[dict[str, Any]]:
+    """Read a smoke file: one JSON object per line; skip blanks and # comments."""
+    cases = []
+    with open(path, encoding="utf-8") as handle:
+        for number, line in enumerate(handle, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            case = json.loads(line)
+            if not case.get("company_name") or len(case) < 2:
+                raise ValueError(
+                    f"{path}:{number}: need company_name and an expectation"
+                )
+            cases.append(case)
+    if not cases:
+        raise ValueError(f"{path} has no cases")
+    return cases
+
+
+def mismatches(case: dict[str, Any], answer: dict[str, Any]) -> list[str]:
+    """Each expected field of ``case`` that ``answer`` does not match."""
+    return [
+        f"{key} expected {want!r}, got {answer.get(key)!r}"
+        for key, want in case.items()
+        if key not in REQUEST_KEYS and answer.get(key) != want
+    ]
 
 
 def call(
@@ -58,14 +101,24 @@ def call(
 
 
 def percentile(values: list[float], q: float) -> float:
+    """The ``q`` quantile (0-1) of ``values`` by nearest rank."""
     ordered = sorted(values)
     return ordered[min(len(ordered) - 1, int(q * len(ordered)))]
 
 
 def check(
-    base: str, samples: int, p50_ms: float, p95_ms: float
+    base: str,
+    samples: int,
+    p50_ms: float,
+    p95_ms: float,
+    cases: list[dict[str, Any]] | None = None,
+    expect_version: str | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
-    """Run every check; returns (failures, warnings, info lines)."""
+    """Run every check; returns (failures, warnings, info lines).
+
+    Without ``cases`` the canaries are cycled ``samples`` times; with ``cases`` each
+    one runs once.
+    """
     failures: list[str] = []
     warnings: list[str] = []
     info: list[str] = []
@@ -74,32 +127,45 @@ def check(
         if status != 200 or not body or body.get("status") != "ok":
             failures.append(f"/health returned {status}")
         else:
-            info.append(f"build {body.get('build', 'unknown')}")
+            info.append(f"version {body.get('version')}, build {body.get('build')}")
+            if expect_version and body.get("version") != expect_version:
+                failures.append(
+                    f"/health reports version {body.get('version')}, "
+                    f"expected {expect_version}"
+                )
         status, body, _ = call(base, "/ready")
         if status != 200:
             failures.append(f"/ready returned {status} (not ready)")
     except OSError as exc:
         return [f"cannot reach {base}: {exc}"], warnings, info
 
+    if cases is None:
+        run = [CANARIES[i % len(CANARIES)] for i in range(samples)]
+    else:
+        run = cases
     times: list[float] = []
     busy = 0
-    for i in range(samples):
-        name, expected = CANARIES[i % len(CANARIES)]
+    for case in run:
+        name = case["company_name"]
+        request = {k: case[k] for k in REQUEST_KEYS if k in case}
         try:
-            status, body, elapsed = call(base, "/resolve", {"company_name": name})
+            status, body, elapsed = call(base, "/resolve", request)
         except OSError as exc:
             failures.append(f"/resolve failed: {exc}")
             break
         if status == 503:
             busy += 1
             continue
-        if status != 200 or not body or body.get("status") != expected:
-            got = body.get("status") if body else status
-            failures.append(f"{name!r}: expected {expected}, got {got}")
+        if status != 200 or not isinstance(body, dict):
+            failures.append(f"{name!r}: HTTP {status}")
+            continue
+        wrong = mismatches(case, body)
+        if wrong:
+            failures.append(f"{name!r}: {'; '.join(wrong)}")
             continue
         times.append(elapsed)
     if busy:
-        warnings.append(f"{busy} of {samples} lookups got 503 (Wikidata busy?)")
+        warnings.append(f"{busy} of {len(run)} lookups got 503 (Wikidata busy?)")
     if times:
         p50 = statistics.median(times) * 1000
         p95 = percentile(times, 0.95) * 1000
@@ -127,17 +193,29 @@ def notify(webhook: str, text: str) -> None:
 
 
 def main() -> int:
+    """Parse arguments, run the checks, print the result; 1 means something failed."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("url", help="base URL, e.g. http://149.165.159.230")
     parser.add_argument("--samples", type=int, default=6)
     parser.add_argument("--p50-ms", type=float, default=1000)
     parser.add_argument("--p95-ms", type=float, default=3000)
     parser.add_argument(
+        "--smoke",
+        metavar="FILE",
+        help="JSON-lines file of known-good answers to check instead of the canaries",
+    )
+    parser.add_argument(
+        "--expect-version", help="fail unless /health reports this version"
+    )
+    parser.add_argument(
         "--webhook-env",
         help="environment variable holding a webhook URL to post failures to",
     )
     args = parser.parse_args()
-    failures, warnings, info = check(args.url, args.samples, args.p50_ms, args.p95_ms)
+    cases = load_cases(args.smoke) if args.smoke else None
+    failures, warnings, info = check(
+        args.url, args.samples, args.p50_ms, args.p95_ms, cases, args.expect_version
+    )
     for line in info:
         print(f"info: {line}")
     for line in warnings:

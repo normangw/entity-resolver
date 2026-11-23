@@ -18,7 +18,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from entity_resolver import tabular, uploads
+from entity_resolver import __version__, tabular, uploads
 from entity_resolver.config import settings
 from entity_resolver.gleif import Budget, HttpGleifClient, Verified, tiebreak
 from entity_resolver.models import (
@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.jobs.aclose()  # stop jobs and save where each one stopped
 
 
-app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version=__version__, lifespan=lifespan)
 # Added last = outermost: the request id and timing cover the body-size check too.
 app.add_middleware(BodyLimitMiddleware)
 app.add_middleware(RequestMiddleware)
@@ -122,9 +122,7 @@ async def index() -> FileResponse:
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Check that the service is running."""
-    return HealthResponse(
-        status="ok", version=settings.app_version, build=settings.build_id
-    )
+    return HealthResponse(status="ok", version=__version__, build=settings.build_id)
 
 
 @app.get(

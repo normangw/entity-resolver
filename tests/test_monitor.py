@@ -61,7 +61,7 @@ def test_a_wrong_answer_is_a_failure():
         failures, _, _ = monitor.check(url, 4, 1000, 3000)
     finally:
         server.shutdown()
-    assert any("expected unresolved" in f for f in failures)
+    assert any("status expected 'unresolved'" in f for f in failures)
 
 
 def test_not_ready_is_a_failure_and_wikidata_busy_is_only_a_warning():
@@ -85,3 +85,52 @@ def test_not_ready_is_a_failure_and_wikidata_busy_is_only_a_warning():
 def test_an_unreachable_service_is_a_failure():
     failures, _, _ = monitor.check("http://127.0.0.1:1", 2, 1000, 3000)
     assert failures and "cannot reach" in failures[0]
+
+
+def test_smoke_cases_check_every_expected_field(tmp_path):
+    cases = tmp_path / "smoke.jsonl"
+    cases.write_text(
+        "# a comment\n"
+        '{"company_name": "Lyft", "status": "resolved", "parent_company": null}\n'
+        "\n"
+        '{"company_name": "Zyxwv Quantum Bakery", "status": "unresolved"}\n'
+    )
+    loaded = monitor.load_cases(str(cases))
+    assert [c["company_name"] for c in loaded] == ["Lyft", "Zyxwv Quantum Bakery"]
+
+    server, url = serve(HEALTHY)
+    try:
+        failures, _, _ = monitor.check(url, 0, 1000, 3000, cases=loaded)
+        assert failures == []
+        wrong = [{"company_name": "Lyft", "status": "resolved", "parent_company": "X"}]
+        failures, _, _ = monitor.check(url, 0, 1000, 3000, cases=wrong)
+    finally:
+        server.shutdown()
+    assert failures == ["'Lyft': parent_company expected 'X', got None"]
+
+
+def test_a_smoke_case_needs_an_expectation(tmp_path):
+    bad = tmp_path / "smoke.jsonl"
+    bad.write_text('{"company_name": "Lyft"}\n')
+    try:
+        monitor.load_cases(str(bad))
+    except ValueError as exc:
+        assert "expectation" in str(exc)
+    else:
+        raise AssertionError("a case with nothing to check was accepted")
+
+
+def test_a_wrong_version_is_a_failure():
+    server, url = serve(
+        {**HEALTHY, "/health": (200, {"status": "ok", "version": "0.1.0"})}
+    )
+    try:
+        failures, _, _ = monitor.check(url, 2, 1000, 3000, expect_version="0.2.0")
+    finally:
+        server.shutdown()
+    assert any("expected 0.2.0" in f for f in failures)
+
+
+def test_the_seed_smoke_file_is_valid():
+    path = Path(__file__).parents[1] / "eval" / "smoke-seed.jsonl"
+    assert len(monitor.load_cases(str(path))) >= 5
