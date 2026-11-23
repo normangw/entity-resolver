@@ -38,14 +38,16 @@ slides and the final `v1.0.0` release.
   - Locally: ruff, format, mypy, pytest (195 passed) all pass; smoke mode checked
     against a live local server.
 
-## Not verified yet
+## Verification status
 
-- **The CI image job has never run.** There is no Docker on the Mac this was written
-  on, so the build, the HEALTHCHECK wait and the smoke test of the real image run for
-  the first time on GitHub.
-- **The gitleaks history scan has never run.** If it finds a secret, CI goes red:
-  rotate that key, then decide whether to allowlist the finding.
-- The workflows were only parsed as YAML; actionlint was not run.
+- **Verified on GitHub** (CI run 45228277809 on `98-ci-release`, all jobs green): the
+  image builds, passes its HEALTHCHECK and `/ready`, answers `eval/smoke-seed.jsonl`
+  correctly and reports the `pyproject.toml` version; the gitleaks scan of the whole
+  history found no secrets.
+- **Not verified yet:** the publish-to-GHCR steps (they run only on `main`) and
+  `release.yml` (runs only on a tag). Watch both on the first merge and the first tag.
+- There is no Docker on the Mac this was written on; the image was only ever built in
+  CI. actionlint was not run locally (CI parsed and ran the workflows fine).
 
 ## Open decisions (Norman)
 
