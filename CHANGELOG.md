@@ -34,7 +34,9 @@ third.
 
 Everything on `main` before Deliverable 3: the walking skeleton testers used in
 Homework 3, plus the hardening that followed their findings. Tag `v0.1.0` marks commit
-`9031f63`.
+`9031f63`, for history only: it predates the release pipeline, so there is no
+`ghcr.io/normangw/entity-resolver:0.1.0` image and `scripts/deploy.sh` cannot deploy
+or roll back to it. The first deployable release is v0.2.0.
 
 ### Added
 - `POST /resolve`: a company name in, the canonical name, Wikidata id, parent company,

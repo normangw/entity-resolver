@@ -23,9 +23,9 @@ slides and the final `v1.0.0` release.
 
 ## Done
 
-- **Workstream A (#98)**: branch `98-ci-release`, PR
-  [#108](https://github.com/normangw/entity-resolver/pull/108) (base `main`, "Closes
-  #98"), awaiting a teammate's review. CI on the PR is green.
+- **Workstream A (#98)**: PR [#108](https://github.com/normangw/entity-resolver/pull/108)
+  squash-merged into `main` as `4cafcf0` on 2026-11-23 (reviewed by a teammate outside
+  GitHub; no review is recorded on the PR).
   - `ci.yml`: tests, a gitleaks scan of the whole history, and an image job that builds
     the image, waits for its HEALTHCHECK and `/ready`, and checks
     `eval/smoke-seed.jsonl` plus the version. PRs build only; `main` pushes
@@ -39,11 +39,10 @@ slides and the final `v1.0.0` release.
   - Locally: ruff, format, mypy, pytest (195 passed) all pass; smoke mode checked
     against a live local server.
 
-- **Workstream B (#99), code done, not yet run on Docker**: branch `99-index-deploy`,
-  cut from `98-ci-release`, PR [#109](https://github.com/normangw/entity-resolver/pull/109)
-  (base `98-ci-release`, "Closes #99"; stacked, do not merge directly). After #108
-  squash-merges, cherry-pick its commits onto a fresh branch from `main` and open a
-  replacement PR against `main`.
+- **Workstream B (#99), code done, not yet run on Docker**: re-cut from `main` as
+  branch `99-index-deploy-main` (the commits of `99-index-deploy`, cherry-picked onto
+  `4cafcf0`; same tree). Its PR against `main` replaces the stacked
+  [#109](https://github.com/normangw/entity-resolver/pull/109), which should be closed.
   - `compose.yml`: `alias-index` at `/data/index`, `ALIAS_INDEX_PATH` from `.env`
     (no `.env`: the seed), `image: ghcr.io/normangw/entity-resolver:${VERSION:-main}`
     plus `build:` for dev.
@@ -83,12 +82,18 @@ slides and the final `v1.0.0` release.
    University Press" via Wikidata. A comment for Ken on #104 was drafted, not posted
    yet; post it.
 
-1. Get a teammate's review on #108, squash-merge it, then re-cut #109 from `main`.
-2. After the first push to `main`, make the GHCR package public (package settings →
-   Change visibility); otherwise the instance needs `docker login` with a read-only
-   token.
-3. Tag `v0.1.0` on commit `9031f63` (CHANGELOG.md says that tag exists, and it gives
-   `deploy.sh --previous` something to roll back to).
+1. Make the GHCR package public (package settings → Change visibility), then test a
+   pull from a machine that is not logged in; otherwise the instance needs
+   `docker login` with a read-only token.
+2. `v0.1.0` on `9031f63` is history only: no image exists for it, so it is not a
+   rollback target (CHANGELOG.md says so). The rollback drill is `v0.2.0` → a later
+   version → `deploy.sh --previous`.
+3. Add a `.mailmap` (Phase 0, not done yet). Commits carry four identities for
+   Norman (`Norman` with the Georgetown address, `normangw` and `normanwgy` with a
+   private address, `normanwgy` with the noreply address) and two for Ken. Mapping
+   the private addresses means writing them into a public file, so decide first.
+   GitHub's contributor graph ignores `.mailmap`; it counts emails linked to accounts.
+4. Post dates for D (#102), F (#103) and H (#104) so they do not hold up Phase 2.
 
 ## Warning: macOS iCloud "Optimize Storage"
 
@@ -107,8 +112,8 @@ GitHub rejects pushes whose commits carry a private email. Use
 
 ## Next step
 
-Review and merge #108, re-cut #109 from `main`, then start **Workstream C (#100)**
-(cut from `99-index-deploy` until B merges).
+Get B's replacement PR reviewed and merged, then start **Workstream C (#100)** on a
+branch from `main` (or from `99-index-deploy-main` until B merges).
 
 Setup on a new machine:
 
