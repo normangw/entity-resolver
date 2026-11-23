@@ -1,7 +1,7 @@
 """Back up and restore the alias index, the one file that is slow to rebuild.
 
-``data/companies.full.json`` takes about 20 minutes to rebuild from Wikidata and is
-git-ignored, so it exists only where it was built. This writes it, its metadata and a
+``data/companies.full.json`` takes about 20 minutes to rebuild from Wikidata. A copy is
+committed to the repo, but the volume copy can drift from it. This writes it, its metadata and a
 SHA-256 manifest into one ``.tar.gz``, and restores from that archive after checking
 the checksum and that the index still loads and has the recorded number of companies.
 

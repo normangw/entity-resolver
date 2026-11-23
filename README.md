@@ -436,7 +436,7 @@ uv run mypy src/          # type check
 
 ## Backup and restore
 
-The alias index (`data/companies.full.json`) takes about 20 minutes to rebuild and is git-ignored, so it lives only where it was built. Keep a verified copy somewhere other than that machine (a GitHub release asset, a Jetstream volume snapshot, a cloud bucket).
+The alias index (`data/companies.full.json`, about 4.4 MB, built 2026-10-27) is committed to the repo, so a fresh clone has it. It takes about 20 minutes to rebuild with `scripts/build_index.py`. The backup script below is still useful for snapshotting the copy inside the `alias-index` volume.
 
 ```bash
 python scripts/backup_index.py backup data/companies.full.json backups/   # writes backups/alias-index-<build date>.tar.gz and verifies it
