@@ -84,6 +84,12 @@ def mismatches(case: dict[str, Any], answer: dict[str, Any]) -> list[str]:
     ]
 
 
+def label(case: dict[str, Any]) -> str:
+    """How a case is named in output: the name, plus region/language when given."""
+    extra = [f"{k}={case[k]}" for k in REQUEST_KEYS[1:] if k in case]
+    return repr(case["company_name"]) + (f" ({', '.join(extra)})" if extra else "")
+
+
 def is_local(case: dict[str, Any]) -> bool:
     """Whether a smoke case is answered from the alias index (so never busy)."""
     return case.get("source") == "local"
@@ -162,7 +168,7 @@ def check(
         """Check each case; return the busy ones, or None if the service is gone."""
         busy_cases = []
         for case in batch:
-            name = case["company_name"]
+            name = label(case)
             request = {k: case[k] for k in REQUEST_KEYS if k in case}
             try:
                 status, body, elapsed = call(base, "/resolve", request)
@@ -172,9 +178,9 @@ def check(
             if status == 503:
                 busy_cases.append(case)
             elif status != 200 or not isinstance(body, dict):
-                failures.append(f"{name!r}: HTTP {status}")
+                failures.append(f"{name}: HTTP {status}")
             elif wrong := mismatches(case, body):
-                failures.append(f"{name!r}: {'; '.join(wrong)}")
+                failures.append(f"{name}: {'; '.join(wrong)}")
             else:
                 times.append(elapsed)
         return busy_cases
@@ -191,11 +197,9 @@ def check(
     else:
         for case in busy or []:
             if is_local(case):
-                failures.append(
-                    f"{case['company_name']!r}: 503 on a local-index answer"
-                )
+                failures.append(f"{label(case)}: 503 on a local-index answer")
             else:
-                warnings.append(f"{case['company_name']!r}: 503 twice (Wikidata busy?)")
+                warnings.append(f"{label(case)}: 503 twice (Wikidata busy?)")
     if times:
         p50 = statistics.median(times) * 1000
         p95 = percentile(times, 0.95) * 1000
