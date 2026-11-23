@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import sys
 import threading
 import time
 import urllib.error
@@ -449,6 +450,9 @@ def test_metrics_render_is_prometheus_text():
     assert 'http_request_duration_seconds_bucket{le="+Inf"} 1' in out
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows reads the backslash in the name as a path"
+)
 def test_download_name_cannot_inject_header_characters(client):  # noqa: F811
     rows = [["Company"], ["Apple Inc."]]
     meta = upload(client, csv_bytes(rows), 'evil"; x=y\\.csv').json()
