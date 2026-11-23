@@ -38,6 +38,26 @@ slides and the final `v1.0.0` release.
   - Locally: ruff, format, mypy, pytest (195 passed) all pass; smoke mode checked
     against a live local server.
 
+- **Workstream B (#99), code done, not yet run on Docker**: branch `99-index-deploy`,
+  cut from `98-ci-release` (local commits, not pushed). Open its PR with base
+  `98-ci-release`; after #98 squash-merges, cherry-pick onto a fresh branch from `main`.
+  - `compose.yml`: `alias-index` at `/data/index`, `ALIAS_INDEX_PATH` from `.env`
+    (no `.env`: the seed), `image: ghcr.io/normangw/entity-resolver:${VERSION:-main}`
+    plus `build:` for dev.
+  - `scripts/load_index.sh` (index file or backup archive into the volume, then
+    `docker compose restart api`), `scripts/deploy.sh <version> | --previous
+    [--dry-run]`, deploy log `~/entity-resolver-deploy.log` with result `ok`, `WARN`
+    or `failed-<step>`.
+  - Deploy check rule: any wrong answer fails; a 503 on a `"source": "local"` case
+    fails; a 503 on a Wikidata case is retried once after 10 s, then `WARN`.
+  - `eval/smoke.jsonl`: 18 cases, every answer checked against the full index and
+    live Wikidata on 2026-11-23. `tests/test_smoke_file.py` re-checks the local ones
+    offline when `data/companies.full.json` is present.
+  - Never run with Docker (no Docker on either machine so far): the docker steps of
+    both scripts are first exercised in the Jetstream drills (#106).
+  - Separate branch `99-commit-full-index` (b391d84) commits the full index to git;
+    not merged into `99-index-deploy`.
+
 ## Verification status
 
 - **Verified on GitHub** (CI run 45228277809 on `98-ci-release`, all jobs green): the
@@ -50,6 +70,12 @@ slides and the final `v1.0.0` release.
   CI. actionlint was not run locally (CI parsed and ran the workflows fine).
 
 ## Open decisions (Norman)
+
+0. Bugs found while writing `eval/smoke.jsonl` (outside B; not fixed, not in the
+   smoke set): `"N/A"` resolves through Wikidata to "Tomlinson Street electrical
+   substation", because `_GENERIC_NAMES` in `resolver.py` is built with `.split()`,
+   so `"n a"` is never a member. `"Georgetown University"` resolves to "Georgetown
+   University Press" via Wikidata. Candidates for a tester-fix PR (H, #104).
 
 1. Open the PR for `98-ci-release` (closes #98) and get a teammate's review.
 2. After the first push to `main`, make the GHCR package public (package settings →
@@ -69,19 +95,8 @@ git-ignored and are not in the repo; copy them over by hand.
 
 ## Next step
 
-Start **Workstream B (#99)** on a fresh branch from `main` (or from `98-ci-release`
-until #98 merges):
-
-1. Move the alias index out of the image: mount `alias-index` at `/data/index` and
-   read `ALIAS_INDEX_PATH` from `.env` (dev default: the bundled seed).
-2. `scripts/load_index.sh` to copy an index or a backup archive into the volume.
-3. `scripts/deploy.sh <version>` and `deploy.sh --previous` (pull, record the digest,
-   `up -d`, wait healthy, run `eval/smoke.jsonl`, append to the deploy log).
-4. `compose.yml`: `image: ghcr.io/normangw/entity-resolver:${VERSION:-main}`, keep
-   `build:` for local dev.
-5. Write `eval/smoke.jsonl` (full index: Lyft, YouTube → Google, a typo, a non-English
-   alias, same-name cases, gibberish, a non-company). Check every expected answer
-   against the real full index before committing.
+Finish **Workstream B (#99)**: push `99-index-deploy`, open its PR (base
+`98-ci-release`), then start **Workstream C (#100)** on a branch cut from it.
 
 Setup on a new machine:
 
