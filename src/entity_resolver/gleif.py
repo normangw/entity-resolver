@@ -34,6 +34,8 @@ USER_AGENT = "entity-resolver-course-project/0.1 (DSAN 6700, Georgetown)"
 
 @dataclass(frozen=True)
 class GleifCompany:
+    """One official GLEIF record: its LEI, legal name and entity status."""
+
     lei: str
     name: str
     status: str | None
@@ -56,21 +58,28 @@ def parse_response(payload: dict[str, Any]) -> dict[str, GleifCompany]:
 
 
 class GleifClient(Protocol):
-    async def lookup(self, leis: Sequence[str]) -> dict[str, GleifCompany]: ...
+    """Anything that can fetch GLEIF records for a list of LEIs."""
+
+    async def lookup(self, leis: Sequence[str]) -> dict[str, GleifCompany]:
+        """Official records for ``leis``, keyed by LEI."""
+        ...
 
 
 class HttpGleifClient:
     """Fetches records from the public GLEIF API, one request per lookup."""
 
     def __init__(self, timeout: float = 5.0, base_url: str = BASE_URL) -> None:
+        """``timeout`` bounds each request; ``base_url`` is the GLEIF API root."""
         self._timeout = timeout
         self._base_url = base_url
 
     async def lookup(self, leis: Sequence[str]) -> dict[str, GleifCompany]:
+        """Fetch the records for ``leis`` without blocking the event loop."""
         # urllib blocks, so run it in a worker thread; its own timeout bounds it.
         return await asyncio.to_thread(self._fetch, list(leis))
 
     def _fetch(self, leis: list[str]) -> dict[str, GleifCompany]:
+        """One blocking ``lei-records`` call for all of ``leis`` together."""
         query = urllib.parse.urlencode(
             {"filter[lei]": ",".join(leis), "page[size]": len(leis)}
         )
@@ -89,11 +98,13 @@ class Budget:
     """Daily cap on GLEIF requests. GLEIF is free but shared, so stay polite."""
 
     def __init__(self, daily_limit: int) -> None:
+        """``daily_limit`` is how many requests are allowed on the current day."""
         self._limit = daily_limit
         self._day = date.today()
         self._used = 0
 
     def try_spend(self, requests: int) -> bool:
+        """True if ``requests`` fit in today's cap. They are spent only then."""
         today = date.today()
         if today != self._day:
             self._day, self._used = today, 0
@@ -105,6 +116,8 @@ class Budget:
 
 @dataclass(frozen=True)
 class Verified:
+    """A local candidate and the GLEIF record whose legal name scored best."""
+
     match: Match
     company: GleifCompany
 

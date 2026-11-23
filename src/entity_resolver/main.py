@@ -1,3 +1,5 @@
+"""HTTP API: resolve company names, and the name column of a spreadsheet."""
+
 import asyncio
 import datetime as dt
 import logging
@@ -48,6 +50,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _load_resolver() -> Resolver:
+    """Build the alias-index resolver from the current settings."""
     return Resolver(
         settings.alias_index_path,
         threshold=settings.match_threshold,
@@ -328,6 +331,7 @@ def _upload_resolver(state, region: str, language: str = "en"):
     failures = 0
 
     async def resolve_one(name: str) -> ResolveResponse:
+        """Resolve ``name``. A 503 is ``retry``; after three, a local miss is too."""
         nonlocal failures
         if failures >= 3:
             local = await asyncio.to_thread(state.resolver.resolve, name, region)
@@ -412,6 +416,7 @@ async def resolve_batch(body: BatchRequest, request: Request) -> BatchResponse:
 
 
 def _job(request: Request, job_id: str) -> uploads.Job:
+    """The upload job, or 404 when the id is unknown or has expired."""
     job = request.app.state.jobs.get(job_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Upload not found or expired")
@@ -419,6 +424,7 @@ def _job(request: Request, job_id: str) -> uploads.Job:
 
 
 def _bad_file(exc: tabular.UploadError) -> HTTPException:
+    """Turn a spreadsheet error into a 400 whose body is the error text."""
     return HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
 
 
@@ -536,6 +542,7 @@ async def upload_resolve(
 
 
 def _job_status(job: uploads.Job) -> UploadStatus:
+    """The progress body for this job."""
     return UploadStatus(
         state=job.state,  # type: ignore[arg-type]
         done=job.done,
