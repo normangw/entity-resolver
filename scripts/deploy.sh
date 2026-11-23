@@ -12,11 +12,17 @@
 # then check the known-good answers in eval/smoke.jsonl with scripts/monitor.py (and,
 # for a release, that /health reports that version). Every attempt appends one line
 #   <UTC timestamp> <version> <image digest> <result>
-# to the deploy log, where result is ok or failed-<step>. On a failure it exits 1 and
-# prints the rollback command.
+# to the deploy log, where result is one of
+#   ok             every known-good answer matched
+#   WARN           every local-index answer matched, but some Wikidata-dependent
+#                  ones stayed 503 after a retry (Wikidata throttling, by design)
+#   failed-<step>  pull, start, health or smoke failed; exits 1 and prints the
+#                  rollback command
+# A wrong answer, or a 503 on an answer from the local index, is failed-smoke.
 #
-# --previous reads the log: the version to go back to is the newest "ok" line whose
-# version differs from the last line's (so it also works right after a failed deploy).
+# --previous reads the log: the version to go back to is the newest ok or WARN line
+# whose version differs from the last line's (so it also works right after a failed
+# deploy).
 #
 # Run it from the repository checkout on the server, with the full index loaded (see
 # scripts/load_index.sh). Always deploy through this script: a bare `docker compose
@@ -60,7 +66,7 @@ if $previous; then
         { v[NR] = $2; r[NR] = $4 }
         END {
             for (i = NR - 1; i >= 1; i--)
-                if (r[i] == "ok" && v[i] != v[NR]) { print v[i]; exit }
+                if ((r[i] == "ok" || r[i] == "WARN") && v[i] != v[NR]) { print v[i]; exit }
         }' "$LOG")
     [ -n "$version" ] || {
         echo "error: $LOG has no earlier good version to roll back to" >&2
@@ -74,7 +80,8 @@ case "$version" in
     *[!A-Za-z0-9._-]* | "") echo "error: bad version '$version'" >&2; exit 2 ;;
 esac
 
-monitor_args=(--smoke "$SMOKE" --p50-ms 5000 --p95-ms 15000)
+# Exit code 3 from monitor.py: passed, but some Wikidata answers stayed busy.
+monitor_args=(--smoke "$SMOKE" --p50-ms 5000 --p95-ms 15000 --warn-exit-code 3)
 if [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     monitor_args+=(--expect-version "$version")
 fi
@@ -128,7 +135,17 @@ until container=$(docker compose ps -q api) && [ -n "$container" ] &&
 done
 
 echo "== known-good answers ($SMOKE)"
-python3 scripts/monitor.py "$URL" "${monitor_args[@]}" || fail smoke
+smoke=0
+python3 scripts/monitor.py "$URL" "${monitor_args[@]}" || smoke=$?
+case $smoke in
+    0) result=ok ;;
+    3) result=WARN ;;
+    *) fail smoke ;;
+esac
 
-record ok
-echo "deployed $version ($digest); logged to $LOG"
+record "$result"
+echo "deployed $version ($digest), result $result; logged to $LOG"
+if [ "$result" = WARN ]; then
+    echo "WARN: Wikidata was busy for some checks; local answers are correct." >&2
+    echo "      Re-check later: python3 scripts/monitor.py $URL --smoke $SMOKE" >&2
+fi

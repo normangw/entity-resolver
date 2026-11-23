@@ -183,7 +183,7 @@ scripts/deploy.sh 0.2.0        # deploy a release
 scripts/deploy.sh --previous   # roll back to the last good version before it
 ```
 
-`deploy.sh` pulls the image, records its digest, runs `docker compose up -d`, waits until the container is healthy and `/ready` answers, then checks the known-good answers in `eval/smoke.jsonl` with `scripts/monitor.py` (and that `/health` reports the version). Each attempt appends `<time> <version> <digest> <result>` to `~/entity-resolver-deploy.log`; `--previous` reads it. On a failure it exits non-zero and prints the rollback command. `--dry-run` shows what it would do. Deploy only through the script: a bare `docker compose up -d` runs `:main` unless `VERSION` is set.
+`deploy.sh` pulls the image, records its digest, runs `docker compose up -d`, waits until the container is healthy and `/ready` answers, then checks the known-good answers in `eval/smoke.jsonl` with `scripts/monitor.py` (and that `/health` reports the version). A wrong answer fails the deploy, and so does a `503` on a case answered from the local index (one that expects `"source": "local"`). A `503` on a case that needs Wikidata is its designed throttling answer: it is retried once after 10 s and, if still busy, logged as `WARN` rather than failing. Each attempt appends `<time> <version> <digest> <result>` (`ok`, `WARN` or `failed-<step>`) to `~/entity-resolver-deploy.log`; `--previous` reads it and treats `ok` and `WARN` as good versions. On a failure it exits non-zero and prints the rollback command. `--dry-run` shows what it would do. Deploy only through the script: a bare `docker compose up -d` runs `:main` unless `VERSION` is set.
 
 ### Call every endpoint
 

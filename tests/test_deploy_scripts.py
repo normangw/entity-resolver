@@ -49,6 +49,7 @@ def test_a_release_is_deployed_by_version_and_checked_for_it():
     assert "would deploy ghcr.io/normangw/entity-resolver:0.2.0" in result.stdout
     assert "--expect-version 0.2.0" in result.stdout
     assert "--smoke eval/smoke.jsonl" in result.stdout
+    assert "--warn-exit-code 3" in result.stdout
 
 
 def test_a_branch_image_is_not_checked_for_a_version():
@@ -69,6 +70,8 @@ def test_a_branch_image_is_not_checked_for_a_version():
         (["0.1.0 ok", "0.2.0 failed-health", "0.3.0 ok"], "0.1.0"),
         # Rolling back twice returns to where it started, like `cd -`.
         (["0.1.0 ok", "0.2.0 ok", "0.1.0 ok"], "0.2.0"),
+        # A deploy that passed with Wikidata busy (WARN) is a good version.
+        (["0.1.0 WARN", "0.2.0 ok"], "0.1.0"),
     ],
 )
 def test_previous_reads_the_last_good_version_from_the_log(tmp_path, history, expected):

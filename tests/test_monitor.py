@@ -8,11 +8,17 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import monitor  # noqa: E402
 
 
-def serve(answers: dict[str, tuple[int, dict]]):
-    """A throwaway local server; ``answers`` maps path (or path+name) to a reply."""
+def serve(answers: dict):
+    """A throwaway local server; ``answers`` maps path (or path+name) to a reply.
+
+    A reply may also be a list of replies, given in turn (the last one repeats).
+    """
 
     class Handler(http.server.BaseHTTPRequestHandler):
-        def _reply(self, status: int, body: dict) -> None:
+        def _reply(self, reply) -> None:
+            if isinstance(reply, list):
+                reply = reply.pop(0) if len(reply) > 1 else reply[0]
+            status, body = reply
             raw = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Length", str(len(raw)))
@@ -20,12 +26,12 @@ def serve(answers: dict[str, tuple[int, dict]]):
             self.wfile.write(raw)
 
         def do_GET(self):
-            self._reply(*answers[self.path])
+            self._reply(answers[self.path])
 
         def do_POST(self):
             size = int(self.headers["Content-Length"])
             name = json.loads(self.rfile.read(size))["company_name"]
-            self._reply(*answers[f"{self.path}:{name}"])
+            self._reply(answers[f"{self.path}:{name}"])
 
         def log_message(self, *args):
             pass
@@ -134,3 +140,62 @@ def test_a_wrong_version_is_a_failure():
 def test_the_seed_smoke_file_is_valid():
     path = Path(__file__).parents[1] / "eval" / "smoke-seed.jsonl"
     assert len(monitor.load_cases(str(path))) >= 5
+
+
+BUSY = (503, {"detail": "Wikidata is unavailable"})
+LOCAL_CASE = {"company_name": "Lyft", "status": "resolved", "source": "local"}
+WIKIDATA_CASE = {"company_name": "YouTube", "status": "resolved"}
+SMOKE_ANSWERS = {
+    **HEALTHY,
+    "/resolve:Lyft": (200, {"status": "resolved", "source": "local"}),
+    "/resolve:YouTube": (200, {"status": "resolved", "source": "wikidata"}),
+}
+
+
+def smoke(answers, cases):
+    server, url = serve(answers)
+    try:
+        return monitor.check(url, 0, 1000, 3000, cases=cases, busy_retry_seconds=0)
+    finally:
+        server.shutdown()
+
+
+def test_smoke_a_busy_wikidata_answer_is_retried_then_a_warning():
+    answers = {**SMOKE_ANSWERS, "/resolve:YouTube": BUSY}
+    failures, warnings, _ = smoke(answers, [LOCAL_CASE, WIKIDATA_CASE])
+    assert failures == []
+    assert warnings == ["'YouTube': 503 twice (Wikidata busy?)"]
+
+
+def test_smoke_a_busy_answer_that_recovers_on_retry_passes_cleanly():
+    ok = SMOKE_ANSWERS["/resolve:YouTube"]
+    answers = {**SMOKE_ANSWERS, "/resolve:YouTube": [BUSY, ok]}
+    failures, warnings, _ = smoke(answers, [LOCAL_CASE, WIKIDATA_CASE])
+    assert failures == [] and warnings == []
+
+
+def test_smoke_a_busy_local_answer_is_a_failure():
+    answers = {**SMOKE_ANSWERS, "/resolve:Lyft": BUSY}
+    failures, _, _ = smoke(answers, [LOCAL_CASE, WIKIDATA_CASE])
+    assert failures == ["'Lyft': 503 on a local-index answer"]
+
+
+def test_smoke_a_wrong_wikidata_answer_is_still_a_failure():
+    answers = {**SMOKE_ANSWERS, "/resolve:YouTube": (200, {"status": "unresolved"})}
+    failures, _, _ = smoke(answers, [LOCAL_CASE, WIKIDATA_CASE])
+    assert failures == ["'YouTube': status expected 'resolved', got 'unresolved'"]
+
+
+def test_warnings_use_the_warn_exit_code(tmp_path, monkeypatch, capsys):
+    cases = tmp_path / "smoke.jsonl"
+    cases.write_text(f"{json.dumps(LOCAL_CASE)}\n{json.dumps(WIKIDATA_CASE)}\n")
+    server, url = serve({**SMOKE_ANSWERS, "/resolve:YouTube": BUSY})
+    argv = ["monitor.py", url, "--smoke", str(cases), "--busy-retry-seconds", "0"]
+    try:
+        monkeypatch.setattr(sys, "argv", argv)
+        assert monitor.main() == 0
+        monkeypatch.setattr(sys, "argv", [*argv, "--warn-exit-code", "3"])
+        assert monitor.main() == 3
+    finally:
+        server.shutdown()
+    assert "ok, with warnings" in capsys.readouterr().out
