@@ -3,8 +3,11 @@
 # only published port (80); the API is reachable only through it. There is no
 # database, vector store or cache.
 # Start everything on a fresh clone with:  docker compose up -d
+# (pulls the published :main image, or builds it; add --build to run your tree).
 # To make /health report the deployed commit:
 #   BUILD_ID=$(git rev-parse --short HEAD) docker compose up -d --build
+# On the server, deploy a published image instead of building one:
+#   scripts/deploy.sh 0.2.0        (and scripts/deploy.sh --previous to roll back)
 #
 # NOTE: the resource limits, cap_drop and healthchecks below have not been run on a
 # live host; check `docker compose ps` shows both services healthy after the first
@@ -12,24 +15,29 @@
 
 services:
   api:
+    # The image CI tested and published. VERSION is a release (0.2.0), a commit sha
+    # or main; scripts/deploy.sh sets it. `--build` builds from source instead, for
+    # local development.
+    image: ghcr.io/normangw/entity-resolver:${VERSION:-main}
     build:
       context: .
       args:
         BUILD_ID: ${BUILD_ID:-unknown}
-    image: entity-resolver:latest
     # Settings come in at run time, never baked into the image.
-    # .env is optional: without it the defaults in config.py apply.
+    # .env is optional: without it the defaults in config.py apply, including the
+    # bundled 5-company seed index. On the server .env sets
+    #   ALIAS_INDEX_PATH=/data/index/companies.full.json
+    # after scripts/load_index.sh has put the full index into the volume below.
     env_file:
       - path: .env
         required: false
-    environment:
-      # The alias index lives in the named volume so it survives the container.
-      ALIAS_INDEX_PATH: /app/src/entity_resolver/data/companies.json
     # Not published: only the proxy below can reach it, on the compose network.
     expose:
       - "8000"
     volumes:
-      - alias-index:/app/src/entity_resolver/data
+      # The full alias index, loaded by scripts/load_index.sh; outside the image so
+      # a deploy or rollback never touches it.
+      - alias-index:/data/index
       # Upload jobs (files, state, answers) survive a restart for UPLOAD_TTL_SECONDS.
       - uploads:/data/uploads
     restart: unless-stopped
@@ -78,7 +86,7 @@ services:
         max-file: "5"
 
 volumes:
-  # Seeded from the image on first start. After changing companies.json in the
-  # repo, run `docker compose down -v && docker compose up -d --build` to reseed.
+  # Holds companies.full.json. Empty until scripts/load_index.sh fills it; the app
+  # reads it only when .env points ALIAS_INDEX_PATH there.
   alias-index:
   uploads:
