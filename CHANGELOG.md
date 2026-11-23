@@ -12,6 +12,11 @@ third.
 ### Changed
 - `/health` and `/docs` report the version from `pyproject.toml`. The `APP_VERSION`
   setting is gone; remove it from your `.env` (it is now ignored).
+- The full alias index lives outside the image, in the `alias-index` volume at
+  `/data/index`, and `ALIAS_INDEX_PATH` comes from `.env`. Without a `.env` the app
+  serves the bundled 5-company seed. Servers that used the old method (index copied
+  into `src/` before the build) must run `scripts/load_index.sh` once and set
+  `ALIAS_INDEX_PATH=/data/index/companies.full.json` in `.env`.
 
 ### Added
 - Every push and pull request builds the container image and smoke-tests it against a
@@ -19,6 +24,11 @@ third.
   Registry as `ghcr.io/normangw/entity-resolver:<commit>`; tags publish
   `:<version>`.
 - Secret scanning (gitleaks) over the whole Git history in CI and before each commit.
+- `scripts/deploy.sh <version>` deploys a published image, waits until it is healthy,
+  checks known-good answers (`eval/smoke.jsonl`) and logs the result;
+  `deploy.sh --previous` rolls back to the last good version.
+- `scripts/load_index.sh` loads an index file or a backup archive into the volume,
+  after the same checks as a restore.
 
 ## v0.1.0 (2026-11-12)
 

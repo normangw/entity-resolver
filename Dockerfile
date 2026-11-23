@@ -4,12 +4,12 @@
 #   library inside this application container. It is CPU-only, scores a name in
 #   milliseconds and needs no GPU, so a second model container or a hosted API
 #   would only add a network hop and another thing to keep running.
-# Weights / artifact: the "model artifact" is the alias index
-#   src/entity_resolver/data/companies.json. It is a few KB and versioned with the
-#   code, so it is baked into the image. compose.yml copies it into the named
-#   volume `alias-index` on first start. compose.yml sets ALIAS_INDEX_PATH under
-#   `environment`, which overrides .env, and the volume keeps the first-start
-#   file, so changing companies.json needs `docker compose down -v` and a rebuild.
+# Weights / artifact: the "model artifact" is the alias index. The image carries
+#   only the 5-company seed (src/entity_resolver/data/companies.json), so a fresh
+#   clone works with no data. The full index is git-ignored and too slow to rebuild
+#   per deploy, so it lives outside the image in the named volume `alias-index`,
+#   mounted at /data/index; scripts/load_index.sh puts it there and .env points
+#   ALIAS_INDEX_PATH at it. Swapping the index is a load and a restart, not a build.
 # Dependencies: none yet (no database, vector store or cache), so compose.yml
 #   runs this one service.
 
