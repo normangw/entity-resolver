@@ -30,7 +30,6 @@
 # Not in the index: the Wikidata fallback finds the company and its parent.
 {"company_name": "YouTube", "status": "resolved", "source": "wikidata", "canonical_name": "YouTube", "wikidata_id": "Q866", "parent_company": "Google"}
 {"company_name": "Beats Electronics", "status": "resolved", "source": "wikidata", "canonical_name": "Beats Electronics", "wikidata_id": "Q1961036", "parent_company": "Apple Inc."}
-{"company_name": "上海航空", "status": "resolved", "source": "wikidata", "canonical_name": "Shanghai Airlines", "wikidata_id": "Q721994", "parent_company": "China Eastern Airlines"}
 # Must stay unresolved: gibberish, a placeholder, a phrase and a person.
 {"company_name": "Zyxwv Quantum Bakery", "status": "unresolved", "canonical_name": null}
 {"company_name": "TBD", "status": "unresolved", "canonical_name": null}

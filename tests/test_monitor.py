@@ -199,3 +199,19 @@ def test_warnings_use_the_warn_exit_code(tmp_path, monkeypatch, capsys):
     finally:
         server.shutdown()
     assert "ok, with warnings" in capsys.readouterr().out
+
+
+def test_a_failed_smoke_case_is_named_with_its_region(tmp_path, monkeypatch, capsys):
+    """The deploy log shows monitor.py's output, so it must say which case failed."""
+    case = {**LOCAL_CASE, "region": "us"}
+    cases = tmp_path / "smoke.jsonl"
+    cases.write_text(json.dumps(case) + chr(10))
+    answers = {**SMOKE_ANSWERS, "/resolve:Lyft": (200, {"status": "unresolved"})}
+    server, url = serve(answers)
+    try:
+        monkeypatch.setattr(sys, "argv", ["monitor.py", url, "--smoke", str(cases)])
+        assert monitor.main() == 1
+    finally:
+        server.shutdown()
+    out = capsys.readouterr().out
+    assert "FAIL: 'Lyft' (region=us): status expected 'resolved'" in out
