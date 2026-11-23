@@ -23,8 +23,9 @@ slides and the final `v1.0.0` release.
 
 ## Done
 
-- **Workstream A (#98)**: commit `3ab9e3e` on branch `98-ci-release` (pushed; PR not
-  opened yet).
+- **Workstream A (#98)**: branch `98-ci-release`, PR
+  [#108](https://github.com/normangw/entity-resolver/pull/108) (base `main`, "Closes
+  #98"), awaiting a teammate's review. CI on the PR is green.
   - `ci.yml`: tests, a gitleaks scan of the whole history, and an image job that builds
     the image, waits for its HEALTHCHECK and `/ready`, and checks
     `eval/smoke-seed.jsonl` plus the version. PRs build only; `main` pushes
@@ -39,8 +40,10 @@ slides and the final `v1.0.0` release.
     against a live local server.
 
 - **Workstream B (#99), code done, not yet run on Docker**: branch `99-index-deploy`,
-  cut from `98-ci-release` (local commits, not pushed). Open its PR with base
-  `98-ci-release`; after #98 squash-merges, cherry-pick onto a fresh branch from `main`.
+  cut from `98-ci-release`, PR [#109](https://github.com/normangw/entity-resolver/pull/109)
+  (base `98-ci-release`, "Closes #99"; stacked, do not merge directly). After #108
+  squash-merges, cherry-pick its commits onto a fresh branch from `main` and open a
+  replacement PR against `main`.
   - `compose.yml`: `alias-index` at `/data/index`, `ALIAS_INDEX_PATH` from `.env`
     (no `.env`: the seed), `image: ghcr.io/normangw/entity-resolver:${VERSION:-main}`
     plus `build:` for dev.
@@ -50,8 +53,9 @@ slides and the final `v1.0.0` release.
     or `failed-<step>`.
   - Deploy check rule: any wrong answer fails; a 503 on a `"source": "local"` case
     fails; a 503 on a Wikidata case is retried once after 10 s, then `WARN`.
-  - `eval/smoke.jsonl`: 18 cases, every answer checked against the full index and
-    live Wikidata on 2026-11-23. `tests/test_smoke_file.py` re-checks the local ones
+  - `eval/smoke.jsonl`: 17 cases, every answer checked against the full index and
+    live Wikidata on 2026-11-23 (上海航空 removed: in the seed but not the full
+    index, so it depended on live Wikidata). Failures name the case and its region. `tests/test_smoke_file.py` re-checks the local ones
     offline when `data/companies.full.json` is present.
   - Never run with Docker (no Docker on either machine so far): the docker steps of
     both scripts are first exercised in the Jetstream drills (#106).
@@ -60,7 +64,8 @@ slides and the final `v1.0.0` release.
 
 ## Verification status
 
-- **Verified on GitHub** (CI run 45228277809 on `98-ci-release`, all jobs green): the
+- **Verified on GitHub** (CI run 45228277809 on `98-ci-release`, all jobs green, and
+  again on PR #108, run 45236823628, all jobs green): the
   image builds, passes its HEALTHCHECK and `/ready`, answers `eval/smoke-seed.jsonl`
   correctly and reports the `pyproject.toml` version; the gitleaks scan of the whole
   history found no secrets.
@@ -75,9 +80,10 @@ slides and the final `v1.0.0` release.
    smoke set): `"N/A"` resolves through Wikidata to "Tomlinson Street electrical
    substation", because `_GENERIC_NAMES` in `resolver.py` is built with `.split()`,
    so `"n a"` is never a member. `"Georgetown University"` resolves to "Georgetown
-   University Press" via Wikidata. Candidates for a tester-fix PR (H, #104).
+   University Press" via Wikidata. A comment for Ken on #104 was drafted, not posted
+   yet; post it.
 
-1. Open the PR for `98-ci-release` (closes #98) and get a teammate's review.
+1. Get a teammate's review on #108, squash-merge it, then re-cut #109 from `main`.
 2. After the first push to `main`, make the GHCR package public (package settings →
    Change visibility); otherwise the instance needs `docker login` with a read-only
    token.
@@ -93,10 +99,16 @@ and iCloud (for example `~/code/entity-resolver`), or set the folder to "Keep
 Downloaded" in Finder. Note that `CLAUDE.md` and `data/companies.full.json` are
 git-ignored and are not in the repo; copy them over by hand.
 
+## Commit identity
+
+GitHub rejects pushes whose commits carry a private email. Use
+`git config user.email 201135778+normangw@users.noreply.github.com` in each new clone
+(set in the Windows clone; the Mac commits used gw341@georgetown.edu).
+
 ## Next step
 
-Finish **Workstream B (#99)**: push `99-index-deploy`, open its PR (base
-`98-ci-release`), then start **Workstream C (#100)** on a branch cut from it.
+Review and merge #108, re-cut #109 from `main`, then start **Workstream C (#100)**
+(cut from `99-index-deploy` until B merges).
 
 Setup on a new machine:
 
