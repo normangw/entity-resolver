@@ -12,7 +12,8 @@ class Settings(BaseSettings):
     """Load and validate application configuration at startup."""
 
     app_name: str = Field(default="Entity Resolver API", min_length=1)
-    app_version: str = Field(default="0.1.0", min_length=1)
+    # The version is not a setting: it lives only in pyproject.toml and is read from
+    # the installed package (entity_resolver.__version__), so it cannot drift.
     debug: bool = False
     wikidata_timeout: int = Field(default=10, gt=0)
     # On by default so brands and subsidiaries (YouTube, Instagram) resolve. Tests set

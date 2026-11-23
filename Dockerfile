@@ -13,12 +13,12 @@
 # Dependencies: none yet (no database, vector store or cache), so compose.yml
 #   runs this one service.
 
-# Pinned to the Debian release so a new base distro never arrives unannounced.
-# For fully reproducible builds pin the digest too (docker buildx imagetools inspect).
-FROM python:3.12-slim-bookworm
+# Pinned by digest (the multi-arch index of python:3.12-slim-bookworm), so the base
+# never changes under us. To update: docker buildx imagetools inspect <tag>.
+FROM python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
 
-# uv, pinned, copied from its official image.
-COPY --from=ghcr.io/astral-sh/uv:0.9.5 /uv /uvx /bin/
+# uv, pinned by version and digest, copied from its official image.
+COPY --from=ghcr.io/astral-sh/uv:0.9.5@sha256:f459f6f73a8c4ef5d69f4e6fbbdb8af751d6fa40ec34b39a1ab469acd6e289b7 /uv /uvx /bin/
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -50,6 +50,10 @@ RUN uv sync --frozen --no-dev
 # verified:  docker compose build --build-arg BUILD_ID=$(git rev-parse --short HEAD)
 ARG BUILD_ID=unknown
 ENV BUILD_ID=${BUILD_ID}
+
+# Links the published image to this repository on the GitHub Container Registry.
+LABEL org.opencontainers.image.source="https://github.com/normangw/entity-resolver" \
+      org.opencontainers.image.description="Company-name entity resolver API"
 
 EXPOSE 8000
 

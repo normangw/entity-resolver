@@ -1,0 +1,78 @@
+# Release. Push a tag vX.Y.Z on a commit of main whose pyproject.toml says X.Y.Z:
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# This does not rebuild anything. It takes the image ci.yml already built, smoke-tested
+# and published for that commit (ghcr.io/<repo>:<sha>), gives it the version tag
+# (:X.Y.Z, and :latest), and creates a GitHub Release whose notes are that version's
+# section of CHANGELOG.md. scripts/deploy.sh X.Y.Z then deploys exactly that image, and
+# deploy.sh with an older version rolls back.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write # create the GitHub Release
+  packages: write # add tags to the image
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the tag matches the version in pyproject.toml
+        id: meta
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match pyproject.toml version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Extract this version's notes from CHANGELOG.md
+        run: |
+          awk -v v="## $TAG" '
+            index($0, v) == 1 { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no '## $TAG' section"
+            exit 1
+          fi
+          cat notes.md
+
+      - name: Log in to the GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # ci.yml may still be running for this commit when the tag arrives; wait for it.
+      - name: Wait for the tested image of this commit
+        run: |
+          for _ in $(seq 1 60); do
+            docker buildx imagetools inspect "$IMAGE:${{ github.sha }}" >/dev/null 2>&1 && exit 0
+            echo "waiting for $IMAGE:${{ github.sha }} from ci.yml"
+            sleep 20
+          done
+          echo "::error::no image for ${{ github.sha }}; was the commit pushed to main and did CI pass?"
+          exit 1
+
+      - name: Tag the image with the version
+        run: |
+          docker buildx imagetools create \
+            -t "$IMAGE:${{ steps.meta.outputs.version }}" \
+            -t "$IMAGE:latest" \
+            "$IMAGE:${{ github.sha }}"
+          docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$TAG" --title "$TAG" --notes-file notes.md --verify-tag
