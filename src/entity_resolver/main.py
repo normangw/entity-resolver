@@ -2,7 +2,11 @@
 
 import asyncio
 import datetime as dt
+import hashlib
+import hmac
 import logging
+import re
+import secrets
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -40,7 +44,12 @@ from entity_resolver.observability import (
     configure_logging,
     metrics,
 )
-from entity_resolver.protection import BodyLimitMiddleware, api_key, rate_limit
+from entity_resolver.protection import (
+    BodyLimitMiddleware,
+    CacheControlMiddleware,
+    api_key,
+    rate_limit,
+)
 from entity_resolver.resolver import Match, Resolver, is_generic, note_for, variants
 from entity_resolver.wikidata import CircuitBreaker, WikidataClient, WikidataUnavailable
 
@@ -113,6 +122,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title=settings.app_name, version=__version__, lifespan=lifespan)
 # Added last = outermost: the request id and timing cover the body-size check too.
 app.add_middleware(BodyLimitMiddleware)
+app.add_middleware(CacheControlMiddleware)  # covers the 413 above too
 app.add_middleware(RequestMiddleware)
 
 
@@ -415,12 +425,53 @@ async def resolve_batch(body: BatchRequest, request: Request) -> BatchResponse:
 # returns the original rows with the resolver's columns appended.
 
 
+# The upload owner token. One per browser: every upload from it is tagged with the
+# token's hash, and every job route checks it. The cookie's path covers all of them.
+OWNER_COOKIE = "upload_owner"
+_OWNER_TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")  # secrets.token_urlsafe(32)
+
+
+def _token_hash(token: str) -> str:
+    """The SHA-256 of an owner token, as stored on the job."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def _job(request: Request, job_id: str) -> uploads.Job:
-    """The upload job, or 404 when the id is unknown or has expired."""
+    """The upload job, or 404 when it is unknown, expired or not the caller's.
+
+    Someone else's job is a 404, not a 403, so a guessed id does not even confirm
+    that the job exists.
+    """
+    not_found = HTTPException(status.HTTP_404_NOT_FOUND, "Upload not found or expired")
     job = request.app.state.jobs.get(job_id)
-    if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Upload not found or expired")
+    if job is None or job.owner is None:
+        raise not_found
+    token = request.cookies.get(OWNER_COOKIE, "")
+    if not hmac.compare_digest(_token_hash(token), job.owner):
+        raise not_found
     return job
+
+
+def _set_owner_cookie(request: Request, response: Response) -> str:
+    """Give the caller an owner token (keeping a valid one) and return its hash.
+
+    ``HttpOnly`` keeps page scripts away from it, ``SameSite=Strict`` keeps other
+    sites from using it, and ``Secure`` is set whenever the request came in over
+    HTTPS (Caddy forwards the scheme), so a plain-HTTP local run still works.
+    """
+    token = request.cookies.get(OWNER_COOKIE, "")
+    if not _OWNER_TOKEN.fullmatch(token):
+        token = secrets.token_urlsafe(32)
+    response.set_cookie(
+        OWNER_COOKIE,
+        token,
+        max_age=settings.upload_ttl_seconds,
+        path="/upload",
+        secure=request.url.scheme == "https",
+        httponly=True,
+        samesite="strict",
+    )
+    return _token_hash(token)
 
 
 def _bad_file(exc: tabular.UploadError) -> HTTPException:
@@ -433,13 +484,20 @@ def _bad_file(exc: tabular.UploadError) -> HTTPException:
     response_model=UploadResponse,
     dependencies=[Depends(api_key(False)), Depends(rate_limit("upload"))],
 )
-async def upload(file: UploadFile, request: Request) -> UploadResponse:
-    """Upload an .xlsx, .xls or .csv file. Nothing is resolved yet."""
+async def upload(
+    file: UploadFile, request: Request, response: Response
+) -> UploadResponse:
+    """Upload an .xlsx, .xls or .csv file. Nothing is resolved yet.
+
+    The response sets the ``upload_owner`` cookie; only requests that send it back
+    can see or use the job. API clients keep it with ``curl -c``/``-b``.
+    """
     store: uploads.JobStore = request.app.state.jobs
     store.sweep()
     filename = Path(file.filename or "upload").name
     ext = Path(filename).suffix.lower()
     job = store.create(filename, ext if ext in tabular.ALLOWED_EXTENSIONS else ".bin")
+    job.owner = _set_owner_cookie(request, response)
     try:
         size = 0
         with job.input_path.open("wb") as out:

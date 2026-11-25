@@ -74,6 +74,10 @@ class Job:
     # Answers from earlier runs, keyed "region\0name". A re-run reuses every one
     # that is not "retry", so only the rows Wikidata could not answer are redone.
     cache: dict[str, ResolveResponse] = field(default_factory=dict)
+    # SHA-256 (hex) of the owner token in the uploader's cookie. Only the hash is
+    # kept, so the job files on disk cannot be used to take a job over. None means
+    # no one owns it (a job saved by a version without ownership): no one can open it.
+    owner: str | None = None
 
 
 META_FILE = "meta.json"
@@ -101,6 +105,7 @@ def save_job(job: Job) -> None:
         "error": job.error,
         "output": job.output.name if job.output else None,
         "summary": job.summary.model_dump() if job.summary else None,
+        "owner": job.owner,
     }
     try:
         _write_atomic(job.dir / META_FILE, json.dumps(meta))
@@ -132,6 +137,7 @@ def load_job(job_dir: Path) -> Job | None:
             done=int(meta["done"]),
             total=int(meta["total"]),
             error=meta["error"],
+            owner=meta.get("owner"),
         )
         if meta["id"] != job_dir.name or not input_path.is_file():
             return None
