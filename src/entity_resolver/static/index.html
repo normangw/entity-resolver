@@ -285,6 +285,35 @@
       "</dl>" + raw + "</div>";
   }
 
+  // Every request has a time limit, so the page never waits forever. Each limit is
+  // above the server's own worst case for that route (docs/time-limits.md).
+  const LIMIT_MS = {
+    resolve: 45000,  // queue 5 s + Wikidata lookup up to ~20 s, a few name variants
+    ready: 5000,
+    upload: 120000,  // a 10 MB file on a slow connection
+    preview: 30000,
+    start: 30000,
+    status: 10000,
+  };
+  class TimedOut extends Error {}
+  async function call(url, opts, ms) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), ms);
+    try {
+      return await fetch(url, Object.assign({}, opts, { signal: ctl.signal }));
+    } catch (err) {
+      if (err.name === "AbortError") {
+        throw new TimedOut("The server did not answer within " + Math.round(ms / 1000) +
+          " seconds. It may be busy; try again in a minute.");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const failTitle = (err) => (err instanceof TimedOut ? "No answer in time" : "Could not reach the API");
+  const failText = (err) => (err instanceof TimedOut ? err.message : String(err));
+
   function renderError(title, detail) {
     result.innerHTML = '<div class="card error"><div class="status">Error</div>' +
       "<h2>" + esc(title) + "</h2><p>" + esc(detail) + "</p></div>";
@@ -297,11 +326,11 @@
     submit.disabled = true;
     submit.textContent = "Resolving…";
     try {
-      const r = await fetch("/resolve", {
+      const r = await call("/resolve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ company_name, language: $("language").value, region: $("region").value }),
-      });
+      }, LIMIT_MS.resolve);
       const data = await r.json().catch(() => ({}));
       if (r.ok) render(data);
       else if (r.status === 503) {
@@ -312,7 +341,7 @@
       else if (r.status === 422) renderError("Invalid input", (data.detail || []).map((d) => d.msg).join("; ") || "The request was rejected.");
       else renderError("Request failed (" + r.status + ")", JSON.stringify(data));
     } catch (err) {
-      renderError("Could not reach the API", String(err));
+      renderError(failTitle(err), failText(err));
     } finally {
       submit.disabled = false;
       submit.textContent = "Resolve";
@@ -323,13 +352,14 @@
   async function checkReady() {
     const badge = $("ready");
     try {
-      const r = await fetch("/ready");
+      const r = await call("/ready", {}, LIMIT_MS.ready);
       badge.className = "badge " + (r.ok ? "ready" : "loading");
       badge.textContent = r.ok ? "model ready" : "model loading";
       if (!r.ok) setTimeout(checkReady, 2000);
     } catch {
       badge.className = "badge down";
       badge.textContent = "API unreachable";
+      setTimeout(checkReady, 10000);  // keep checking, so the badge recovers by itself
     }
   }
 
@@ -369,10 +399,10 @@
     fd.append("file", f);
     $("limits").textContent = "Uploading…";
     try {
-      const r = await fetch("/upload", { method: "POST", body: fd });
+      const r = await call("/upload", { method: "POST", body: fd }, LIMIT_MS.upload);
       if (!r.ok) { $("limits").textContent = ""; uerror("Could not use this file", await detailOf(r)); return; }
       up = await r.json();
-    } catch (err) { $("limits").textContent = ""; uerror("Could not reach the API", String(err)); return; }
+    } catch (err) { $("limits").textContent = ""; uerror(failTitle(err), failText(err)); return; }
     $("limits").textContent = "Up to " + up.max_rows.toLocaleString() + " data rows per file.";
     $("sheet").innerHTML = up.sheets.map((n) => '<option value="' + esc(n) + '">' + esc(n) + "</option>").join("");
     $("sheetwrap").hidden = up.sheets.length < 2;
@@ -384,7 +414,10 @@
     if (!up) return;
     const q = new URLSearchParams({ has_header: $("header").checked });
     if (up.sheets.length) q.set("sheet", $("sheet").value);
-    const r = await fetch("/upload/" + up.id + "/preview?" + q);
+    let r;
+    try {
+      r = await call("/upload/" + up.id + "/preview?" + q, {}, LIMIT_MS.preview);
+    } catch (err) { uerror(failTitle(err), failText(err)); return; }
     if (!r.ok) { uerror("Could not read this sheet", await detailOf(r)); return; }
     const p = await r.json();
     $("column").innerHTML = p.columns.map((c, i) =>
@@ -417,12 +450,14 @@
     try {
       const body = { column: Number($("column").value), has_header: $("header").checked, region: $("uregion").value };
       if (up.sheets.length) body.sheet = $("sheet").value;
-      const r = await fetch("/upload/" + up.id + "/resolve", {
+      const r = await call("/upload/" + up.id + "/resolve", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-      });
+      }, LIMIT_MS.start);
       if (!r.ok) { uerror("Could not start", await detailOf(r)); return; }
       for (;;) {
-        const s = await (await fetch("/upload/" + up.id + "/status")).json();
+        const sr = await call("/upload/" + up.id + "/status", {}, LIMIT_MS.status);
+        if (!sr.ok) { uerror("Could not follow the job", await detailOf(sr)); return; }
+        const s = await sr.json();
         const pct = s.total ? Math.round((100 * s.done) / s.total) : 0;
         if ($("prog")) { $("prog").style.width = pct + "%"; $("progtext").textContent = s.done + " of " + s.total + " rows"; }
         if (s.state === "error") { uerror("Resolving failed", s.error || "Unknown error"); return; }
@@ -430,7 +465,7 @@
         await new Promise((ok) => setTimeout(ok, 400));
       }
     } catch (err) {
-      uerror("Could not reach the API", String(err));
+      uerror(failTitle(err), failText(err));
     } finally {
       working = false;
       ubtn.disabled = false;

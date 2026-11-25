@@ -25,6 +25,22 @@ third.
   resolve and download. Scripts must keep the cookie (`curl -c jar -b jar`).
 - Responses carry `Cache-Control`: `no-cache` for the page, `no-store` for everything
   else.
+- A Wikidata `429` with a short `Retry-After` (2 s or less) is waited out once per
+  lookup instead of failing at once. Each lookup has a 15 s deadline
+  (`WIKIDATA_DEADLINE_SECONDS`). Every `503` now carries `Retry-After`, and a
+  Wikidata `429` passes Wikidata's value on.
+- Two starts of the same upload job sent at once: one gets `202`, the other `409`.
+- The web page gives up on a request after a time limit and says so, instead of
+  waiting forever.
+- `.env.example` is no longer copied into the image.
+- An upload job saved by another version of the app (extra or missing fields) still
+  loads after a deploy or rollback.
+
+### Breaking
+- New setting `ENVIRONMENT`. With `ENVIRONMENT=production` the app refuses to start
+  without an `API_KEY` of at least 16 characters and `LOG_FORMAT=json`. Copy the new
+  `.env.production.example` and set `API_KEY`.
+- With `GLEIF_ENABLED=true`, `GLEIF_LOW_THRESHOLD` must be below `MATCH_THRESHOLD`.
 
 ### Added
 - Every push and pull request builds the container image and smoke-tests it against a
@@ -39,6 +55,9 @@ third.
   after the same checks as a restore.
 - The API key can also be sent as `Authorization: Bearer <key>`, so Prometheus can
   scrape `/metrics`.
+- Settings `SCORER` (swap the RapidFuzz scorer with a `.env` edit), `WIKIDATA_API_URL`,
+  `WIKIDATA_DEADLINE_SECONDS` and `WIKIDATA_MAX_RETRY_AFTER`.
+- `docs/time-limits.md`: every timeout, where it is set and why.
 
 ## v0.1.0 (2026-11-12)
 

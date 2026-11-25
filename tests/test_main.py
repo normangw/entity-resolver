@@ -320,10 +320,10 @@ def test_index_serves_web_ui():
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     body = r.text
-    assert 'fetch("/resolve"' in body
+    assert 'call("/resolve"' in body
     assert "上海航空" in body  # a non-English example input
     assert "Unresolved" in body
-    assert 'fetch("/upload"' in body  # the spreadsheet upload panel
+    assert 'call("/upload"' in body  # the spreadsheet upload panel
 
 
 def test_index_not_in_openapi_schema():
