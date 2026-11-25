@@ -265,7 +265,8 @@ def test_a_flaky_request_is_retried_with_backoff():
     assert 0.5 <= sleeps[0] <= 1.5 and 1.0 <= sleeps[1] <= 3.0  # jittered, growing
 
 
-def test_throttling_is_not_retried():
+def test_throttling_without_retry_after_is_not_retried():
+    """A 429 that says nothing about when to come back ends the lookup at once."""
     attempts = []
 
     def fetch(params: dict[str, str]) -> dict[str, Any]:

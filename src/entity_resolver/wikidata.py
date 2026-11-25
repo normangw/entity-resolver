@@ -9,8 +9,16 @@ callers must run it off the event loop (``asyncio.to_thread``).
 Answers, including "no such company", are cached in memory for a while: Wikidata
 throttles quickly and a lookup costs three or more requests. Failures are never
 cached, so a throttled name is retried on the next call.
+
+Each lookup has a deadline: no API call, retry or wait starts after it. Timeouts
+and 5xx are retried with backoff. A 429 is waited out once when its
+``Retry-After`` is short and fits in the deadline; otherwise the lookup raises
+``WikidataUnavailable`` carrying that ``Retry-After``. A lookup counts once toward
+the circuit breaker, however many calls it made. See docs/time-limits.md.
 """
 
+import datetime as dt
+import email.utils
 import json
 import logging
 import random
@@ -81,14 +89,14 @@ _MAX_WRAPPER_HOPS = 2
 Fetch = Callable[[dict[str, str]], dict[str, Any]]
 
 
-def _http_fetch(timeout: float) -> Fetch:
-    """A blocking Wikidata caller that gives up after ``timeout`` seconds."""
+def _http_fetch(timeout: float, api_url: str = _API) -> Fetch:
+    """A blocking caller of ``api_url`` that gives up after ``timeout`` seconds."""
 
     def fetch(params: dict[str, str]) -> dict[str, Any]:
         """GET the API with ``params`` and return the JSON object."""
         query = urllib.parse.urlencode({**params, "format": "json"})
         request = urllib.request.Request(
-            f"{_API}?{query}", headers={"User-Agent": _USER_AGENT}
+            f"{api_url}?{query}", headers={"User-Agent": _USER_AGENT}
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data: dict[str, Any] = json.load(response)
@@ -99,19 +107,65 @@ def _http_fetch(timeout: float) -> Fetch:
     return fetch
 
 
+# Seconds we tell our own callers to wait when Wikidata gave no usable Retry-After.
+DEFAULT_RETRY_AFTER = 5.0
+
+
 class WikidataUnavailable(Exception):
-    """Wikidata could not be reached, throttled us, or sent an unusable reply."""
+    """Wikidata could not be reached, throttled us, or sent an unusable reply.
+
+    ``retry_after`` is how many seconds the caller should wait before asking again
+    (Wikidata's own ``Retry-After`` when it sent one).
+    """
+
+    def __init__(self, message: str, retry_after: float = DEFAULT_RETRY_AFTER):
+        """Keep ``message`` and the suggested wait ``retry_after``."""
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class _Throttled(Exception):
+    """Wikidata answered 429 and we will not wait for it within this lookup."""
+
+    def __init__(self, retry_after: float | None):
+        """Keep Wikidata's ``retry_after`` (None when it sent none we can read)."""
+        super().__init__("HTTP Error 429: Too Many Requests")
+        self.retry_after = retry_after
+
+
+class _DeadlineExceeded(TimeoutError):
+    """The lookup used up ``deadline`` seconds; no further call is started."""
 
 
 def _retryable(exc: Exception) -> bool:
     """True for a timeout, a dropped connection or a 5xx, which may pass.
 
-    A 429 or 4xx is not retried: hammering a throttling server makes it worse, and
-    the caller reports it as a 503 by design. A bad JSON body is not retried either.
+    A 429 is handled on its own (see ``WikidataClient._fetch``); other 4xx and a
+    bad JSON body are never retried, since they cannot succeed.
     """
+    if isinstance(exc, _DeadlineExceeded):
+        return False
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code >= 500
     return isinstance(exc, OSError)
+
+
+def _retry_after(exc: urllib.error.HTTPError) -> float | None:
+    """Seconds from a ``Retry-After`` header (seconds or an HTTP date), or None."""
+    value = exc.headers.get("Retry-After") if exc.headers is not None else None
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        return None
+    return max(0.0, (when - dt.datetime.now(dt.UTC)).total_seconds())
 
 
 class CircuitBreaker:
@@ -168,6 +222,13 @@ class CircuitBreaker:
         with self._lock:
             return self._opened_at is not None
 
+    def retry_after(self) -> float:
+        """Seconds until the breaker lets a probe through (0 when it is closed)."""
+        with self._lock:
+            if self._opened_at is None:
+                return 0.0
+            return max(0.0, self._cooldown - (self._clock() - self._opened_at))
+
 
 def _share(statement: dict[str, Any]) -> float | None:
     """The stake a statement records (0-1), or None when it records none."""
@@ -220,18 +281,25 @@ class WikidataClient:
         backoff: float = 0.25,
         sleep: Callable[[float], None] = time.sleep,
         breaker: CircuitBreaker | None = None,
+        api_url: str = _API,
+        deadline: float = 15.0,
+        max_retry_after: float = 2.0,
     ) -> None:
         """``cache_ttl`` is in seconds; 0 turns the cache off.
 
         ``retries`` extra attempts (with exponential backoff and jitter) are made
-        for timeouts and 5xx on each request; ``breaker`` short-circuits lookups
-        while Wikidata keeps failing.
+        for timeouts and 5xx on each request. A 429 whose ``Retry-After`` is at most
+        ``max_retry_after`` seconds is waited out once per lookup. No call starts
+        after ``deadline`` seconds into a lookup. ``breaker`` short-circuits lookups
+        while Wikidata keeps failing; ``api_url`` is the MediaWiki API to ask.
         """
         self._threshold = threshold
-        self._raw_fetch = fetch or _http_fetch(timeout)
+        self._raw_fetch = fetch or _http_fetch(timeout, api_url)
         self._retries = retries
         self._backoff = backoff
         self._sleep = sleep
+        self._deadline = deadline
+        self._max_retry_after = max_retry_after
         self.breaker = breaker or CircuitBreaker(threshold=10**9)
         self._ttl = cache_ttl
         self._max_entries = cache_size
@@ -240,13 +308,18 @@ class WikidataClient:
             OrderedDict()
         )
         self._lock = threading.Lock()  # lookups run on several worker threads
+        # Per lookup, per worker thread: when it must end, and whether its one
+        # 429 wait has been used.
+        self._state = threading.local()
 
     def lookup(self, name: str, language: str = "en") -> Match | None:
         """Return the best company match for ``name``, or None (blocking call).
 
         None means Wikidata answered and had no company by that name. If it
-        could not answer (network failure, HTTP 429, bad JSON) this raises
-        ``WikidataUnavailable`` so an outage is not mistaken for "not found".
+        could not answer (network failure, HTTP 429, bad JSON, deadline) this
+        raises ``WikidataUnavailable`` so an outage is not mistaken for "not
+        found". A failed lookup counts once toward the breaker, however many
+        calls and retries it made.
         """
         key = (normalize(name), language)
         with self._lock:
@@ -255,10 +328,20 @@ class WikidataClient:
                 self._cache.move_to_end(key)
                 return cached[1]
         if not self.breaker.allow():
-            raise WikidataUnavailable("circuit open: Wikidata keeps failing")
+            raise WikidataUnavailable(
+                "circuit open: Wikidata keeps failing",
+                retry_after=max(1.0, self.breaker.retry_after()),
+            )
+        self._state.ends_at = self._clock() + self._deadline
+        self._state.waited_429 = False
         try:
             match = self._lookup(name, language)
-        except (OSError, ValueError) as exc:  # network failure or bad JSON
+        except _Throttled as exc:
+            logger.warning("Wikidata lookup throttled (429)")
+            self.breaker.failure()
+            wait = DEFAULT_RETRY_AFTER if exc.retry_after is None else exc.retry_after
+            raise WikidataUnavailable(str(exc), retry_after=max(1.0, wait)) from exc
+        except (OSError, ValueError) as exc:  # network failure, deadline, bad JSON
             # The name is user input, so it is not logged.
             logger.warning("Wikidata lookup failed: %s", exc)
             self.breaker.failure()
@@ -272,17 +355,50 @@ class WikidataClient:
                     self._cache.popitem(last=False)
         return match
 
+    def _left(self) -> float:
+        """Seconds left before this lookup's deadline (inf outside a lookup)."""
+        ends_at = getattr(self._state, "ends_at", None)
+        return float("inf") if ends_at is None else ends_at - self._clock()
+
     def _fetch(self, params: dict[str, str]) -> dict[str, Any]:
-        """One API call, retried on timeouts and 5xx with backoff and jitter."""
-        for attempt in range(self._retries + 1):
+        """One API call, retried with backoff and jitter while the deadline allows.
+
+        Timeouts, dropped connections and 5xx are retried up to ``retries`` times.
+        A 429 is waited out once per lookup when its ``Retry-After`` is at most
+        ``max_retry_after`` and fits before the deadline; otherwise it ends the
+        lookup (``_Throttled``). No call or wait starts past the deadline.
+        """
+        attempt = 0
+        while True:
+            if self._left() <= 0:
+                raise _DeadlineExceeded("Wikidata lookup deadline passed")
             try:
                 return self._raw_fetch(params)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 429:
+                    error: Exception = exc
+                else:
+                    wait = _retry_after(exc)
+                    if (
+                        wait is None
+                        or wait > self._max_retry_after
+                        or getattr(self._state, "waited_429", False)
+                        or wait * 1.25 >= self._left()
+                    ):
+                        raise _Throttled(wait) from exc
+                    self._state.waited_429 = True
+                    # Never earlier than Wikidata asked; jitter spreads the retries.
+                    self._sleep(wait * (1 + 0.25 * random.random()))  # noqa: S311
+                    continue
             except Exception as exc:
-                if attempt == self._retries or not _retryable(exc):
-                    raise
-                delay = self._backoff * 2**attempt
-                self._sleep(delay * (0.5 + random.random()))  # noqa: S311
-        raise AssertionError("unreachable")  # pragma: no cover
+                error = exc
+            delay = self._backoff * 2**attempt * (0.5 + random.random())  # noqa: S311
+            if attempt >= self._retries or not _retryable(error):
+                raise error
+            if delay >= self._left():
+                raise _DeadlineExceeded("Wikidata lookup deadline passed") from error
+            attempt += 1
+            self._sleep(delay)
 
     def _lookup(self, name: str, language: str) -> Match | None:
         """The best company Wikidata has for ``name``, or None.
