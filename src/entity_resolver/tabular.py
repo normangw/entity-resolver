@@ -84,6 +84,7 @@ def detect_kind(path: Path, filename: str) -> Kind:
 
 
 def _check_zip(path: Path) -> None:
+    """Refuse an .xlsx that is corrupt, macro-enabled, or expands too far."""
     try:
         with zipfile.ZipFile(path) as archive:
             infos = archive.infolist()
@@ -187,6 +188,7 @@ def _clean(value: Any) -> Any:
 
 
 def _xls_rows(path: Path, sheet: str | None, limit: int) -> Iterator[list[Any]]:
+    """Rows of one .xls sheet, at most ``limit``, with dates and errors made plain."""
     book = xlrd.open_workbook(path, on_demand=True)
     try:
         sh = book.sheet_by_name(sheet) if sheet else book.sheet_by_index(0)
@@ -268,6 +270,7 @@ def read_rows(
 
 
 def column_labels(rows: Sequence[Sequence[Any]], has_header: bool) -> list[str]:
+    """Header text, or ``Column A`` and so on when there is no header or it is blank."""
     width = len(rows[0]) if rows else 0
     if has_header and rows:
         return [
@@ -280,6 +283,7 @@ def column_labels(rows: Sequence[Sequence[Any]], has_header: bool) -> list[str]:
 
 
 def cell_text(value: Any) -> str:
+    """A cell as text: dates as ISO strings, and None as an empty string."""
     if value is None:
         return ""
     if isinstance(value, dt.datetime):
@@ -352,6 +356,7 @@ def write_result(
     ws = workbook.create_sheet(title=title)
 
     def make(value: Any) -> WriteOnlyCell:
+        """A text cell for ``value``: drop illegal XML characters, never a formula."""
         if isinstance(value, str):
             value = _XML_ILLEGAL.sub("", value)
         cell = WriteOnlyCell(ws, value=value)

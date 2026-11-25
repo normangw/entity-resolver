@@ -1,3 +1,5 @@
+"""Application settings, read from the environment and ``.env`` at startup."""
+
 import tempfile
 from pathlib import Path
 from typing import Literal

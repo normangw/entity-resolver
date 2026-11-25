@@ -27,6 +27,7 @@ class JsonFormatter(logging.Formatter):
     """One JSON object per line, with the request id of the current request."""
 
     def format(self, record: logging.LogRecord) -> str:
+        """One JSON line: time, level, message, request id and any request fields."""
         entry = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created))
             + f".{int(record.msecs):03d}Z",
@@ -71,6 +72,7 @@ class Metrics:
     """Thread-safe counters and one latency histogram, rendered as Prometheus text."""
 
     def __init__(self) -> None:
+        """Empty counters and a latency histogram, safe to update from any thread."""
         self._lock = threading.Lock()
         self._counters: dict[tuple[str, tuple[tuple[str, str], ...]], int] = (
             defaultdict(int)
@@ -81,11 +83,13 @@ class Metrics:
         self.started = time.time()
 
     def inc(self, name: str, **labels: str) -> None:
+        """Add one to the counter ``name`` for this set of labels."""
         key = (name, tuple(sorted(labels.items())))
         with self._lock:
             self._counters[key] += 1
 
     def observe(self, seconds: float) -> None:
+        """Record one request duration, in seconds, in the latency histogram."""
         with self._lock:
             self._latency_sum += seconds
             self._latency_count += 1
@@ -96,10 +100,12 @@ class Metrics:
             self._latency[-1] += 1
 
     def value(self, name: str, **labels: str) -> int:
+        """The current count for ``name`` and these labels, or 0."""
         with self._lock:
             return self._counters.get((name, tuple(sorted(labels.items()))), 0)
 
     def render(self) -> str:
+        """Prometheus text for the counters, the latency histogram and the uptime."""
         with self._lock:
             lines: list[str] = []
             for (name, labels), count in sorted(self._counters.items()):
@@ -133,9 +139,11 @@ class RequestMiddleware:
     """Assign a request id, time the request, count it and write one log line."""
 
     def __init__(self, app: ASGIApp) -> None:
+        """Wrap ``app`` so every HTTP request is timed, counted and logged."""
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Handle one ASGI call, assigning a request id when the scope is HTTP."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -149,6 +157,7 @@ class RequestMiddleware:
         status = 500
 
         async def send_with_id(message: Message) -> None:
+            """Forward a response, adding the request id header when it starts."""
             nonlocal status
             if message["type"] == "http.response.start":
                 status = message["status"]
