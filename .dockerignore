@@ -2,9 +2,12 @@
 .venv/
 .git/
 .gitignore
+# No env file of any kind, not even the examples: settings come in at run time.
 .env
 .env.*
-!.env.example
+**/.env
+**/.env.*
+*.env
 
 # Caches and build output
 __pycache__/
