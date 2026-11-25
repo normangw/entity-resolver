@@ -536,7 +536,7 @@ async def upload(
                         status.HTTP_413_CONTENT_TOO_LARGE,
                         f"File is larger than {settings.upload_max_bytes // 2**20} MB",
                     )
-                out.write(chunk)
+                await asyncio.to_thread(out.write, chunk)  # disk I/O off the loop
         kind = await asyncio.to_thread(tabular.detect_kind, job.input_path, filename)
         sheets = await asyncio.to_thread(tabular.sheet_names, job.input_path, kind)
     except tabular.UploadError as exc:
@@ -630,7 +630,7 @@ async def upload_resolve(
             status.HTTP_400_BAD_REQUEST, "This spreadsheet could not be read."
         ) from None
     job.state, job.done, job.total = "running", 0, len(table.data)
-    state.jobs.save(job)
+    await asyncio.to_thread(state.jobs.save, job)
     job.task = asyncio.create_task(
         uploads.process(job, table, _upload_resolver(state, body.region), body.region)
     )

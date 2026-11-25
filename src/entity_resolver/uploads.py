@@ -571,11 +571,12 @@ async def process(
         )
         job.output = output
         job.state = "done"
-        save_job(job)
+        # cache.json can hold thousands of answers: write it off the event loop.
+        await asyncio.to_thread(save_job, job)
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.exception("Upload job failed")
         job.state = "error"
         job.error = "Something went wrong while resolving this file."
-        save_job(job)
+        await asyncio.to_thread(save_job, job)
