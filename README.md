@@ -44,7 +44,7 @@ cp .env.example .env
 | `UPLOAD_TTL_SECONDS` | `3600` | Uploads and results are deleted this long after upload |
 | `UPLOAD_MAX_RUNNING` | `3` | Files resolved at the same time; more get `429` |
 | `ALIAS_INDEX_PATH` | bundled `companies.json` (5-company seed) | Local alias index loaded once at startup. In Docker the full index lives in the `alias-index` volume: `/data/index/companies.full.json` (see [Load the full index](#load-the-full-index)) |
-| `API_KEY` | unset | Shared secret sent as the `X-API-Key` header. Unset means open (the public demo). When set it is required on `/resolve/batch` and `/metrics` |
+| `API_KEY` | unset | Shared secret sent as the `X-API-Key` header or as `Authorization: Bearer <key>` (what Prometheus sends). Unset means open (the public demo). When set it is required on `/resolve/batch` and `/metrics`; a missing or wrong key gets `401` |
 | `API_KEY_PROTECT_ALL` | `false` | Also require the key on `/resolve` and `/upload*`. The web page cannot send a key, so this turns the page off |
 | `RATE_LIMIT_RESOLVE_PER_MIN` | `120` | `/resolve` requests per client address per minute (`0` = no limit); over it, `429` with `Retry-After` |
 | `RATE_LIMIT_BATCH_PER_MIN` | `10` | Same for `/resolve/batch` |
@@ -60,6 +60,8 @@ cp .env.example .env
 | `LOG_FORMAT` | `json` | `json` (one object per line with a request id) or `text` |
 | `LOG_LEVEL` | `INFO` | Log level |
 | `BUILD_ID` | `unknown` | Reported as `build` by `/health`; set at image build time (see [Operating the service](#operating-the-service)) |
+| `SITE_ADDRESS` | `:80` | Read by Caddy, not the app. The instance's DNS name turns on HTTPS with a Let's Encrypt certificate; `:80` serves plain HTTP for local runs |
+| `ACME_CA` | Let's Encrypt | Read by Caddy. Set to `https://acme-staging-v02.api.letsencrypt.org/directory` if Let's Encrypt rate-limits us |
 
 ## Running the service
 
@@ -73,7 +75,7 @@ Interactive API docs: `http://localhost:8000/docs`
 
 ## Web UI
 
-The service also serves a one-page web UI at the root URL, `http://localhost:8000/` (on Jetstream2 behind the proxy, `http://<instance-public-ip>/`). It is a single static file, `src/entity_resolver/static/index.html`, returned by `GET /` from the same FastAPI app and container, so there is no separate frontend to build or deploy, and it loads nothing from the internet.
+The service also serves a one-page web UI at the root URL, `http://localhost:8000/` (on Jetstream2 behind the proxy, `https://<instance DNS name>/`). It is a single static file, `src/entity_resolver/static/index.html`, returned by `GET /` from the same FastAPI app and container, so there is no separate frontend to build or deploy, and it loads nothing from the internet.
 
 How to use it:
 
@@ -129,7 +131,7 @@ docker compose ps           # STATUS should show "(healthy)" after ~30 s
 
 Add `--build` to run your working tree instead of the published image. Without a `.env`, the app serves the bundled 5-company seed index, so this works with no data.
 
-`compose.yml` runs two services: `api` (port 8000, not published) and `proxy`, an nginx reverse proxy that publishes port 80 and forwards to `api`. `nginx.conf` limits each client IP to 10 requests per second with a burst of 30 (extra requests get `429`), caps request bodies at 12 MB, hides the nginx version, and adds `X-Content-Type-Options`, `Referrer-Policy` and `X-Frame-Options` headers. The API sees the real client address through `X-Forwarded-For`. There is no database, vector store or cache. The full alias index is kept outside the image in the named volume `alias-index` (mounted at `/data/index`), and the service uses `restart: unless-stopped`, so it comes back by itself after a reboot or a Jetstream2 unshelve.
+`compose.yml` runs two services: `api` (port 8000, not published) and `proxy`, a Caddy reverse proxy that publishes ports 80 and 443 (TCP only) and forwards to `api`. With `SITE_ADDRESS` set to the instance's DNS name, Caddy gets a Let's Encrypt certificate, serves HTTPS and redirects HTTP to it; unset, it serves plain HTTP on port 80. The `Caddyfile` adds HSTS, `X-Content-Type-Options`, `Referrer-Policy` and `X-Frame-Options`, caps uploads at 12 MB and JSON bodies at 512 KB, gives the api 120 s to answer, and returns `404` for `/metrics`. Caddy has no rate limiter, so the app's per-client limits (`RATE_LIMIT_*`) do that job. The API sees the real client address through `X-Forwarded-For`, which Caddy overwrites. There is no database, vector store or cache. The full alias index is kept outside the image in the named volume `alias-index` (mounted at `/data/index`), and the service uses `restart: unless-stopped`, so it comes back by itself after a reboot or a Jetstream2 unshelve.
 
 Useful commands:
 
@@ -151,17 +153,17 @@ docker run -d --name entity-resolver -p 8000:8000 --env-file .env entity-resolve
 
 1. SSH to the instance and install Docker if it isn't there (`curl -fsSL https://get.docker.com | sudo sh`, then `sudo usermod -aG docker $USER` and log in again).
 2. Make sure Docker starts at boot: `sudo systemctl enable docker`.
-3. Clone the repository and copy `.env.production.example` to `.env` (it sets `ALIAS_INDEX_PATH=/data/index/companies.full.json`).
-4. Load the full index into the volume, then deploy a release (both described below).
-5. Allow inbound TCP 80 in the instance's security group in Exosphere/Horizon, and remove the old rule for 8000.
-6. From your own laptop, check it answers from outside:
+3. Clone the repository and copy `.env.production.example` to `.env`. It sets `ALIAS_INDEX_PATH=/data/index/companies.full.json`; set `SITE_ADDRESS` to the instance's DNS name (`<instance>.<project>.projects.jetstream-cloud.org`).
+4. Allow inbound TCP 80 and 443 in the instance's security group in Exosphere/Horizon (Let's Encrypt checks port 80 before it issues the certificate), and remove the old rule for 8000.
+5. Load the full index into the volume, then deploy a release (both described below).
+6. From your own laptop, check it answers from outside with a valid certificate:
 
 ```bash
-export HOST=<instance-public-ip>
-curl http://$HOST/health
+export HOST=<instance>.<project>.projects.jetstream-cloud.org
+curl -vI https://$HOST/health     # look for "SSL certificate verify ok" and HTTP/2 200
 ```
 
-7. Open `http://$HOST/` in a browser to use the web UI.
+7. Open `https://$HOST/` in a browser to use the web UI.
 
 #### Load the full index
 
@@ -267,13 +269,16 @@ Serve the web UI (HTML). See [Web UI](#web-ui). Not listed in `/docs`.
 | `GET /upload/{id}/status` | `state` (`uploaded`, `running`, `done`, `error`), progress, and the summary with the integrity checks when done |
 | `GET /upload/{id}/download` | The resolved file (`409` until done) |
 
+Each upload belongs to whoever uploaded it. `POST /upload` sets an `upload_owner` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/upload`, and `Secure` over HTTPS), and every `/upload/{id}/...` route answers `404` unless the request sends that cookie back, the same answer as for an id that does not exist. The server keeps only a SHA-256 of the token. A browser does this by itself; with curl, keep the cookie in a jar with `-c` and send it with `-b`:
+
 ```bash
-curl -F file=@companies.xlsx http://localhost:8000/upload
+curl -c jar.txt -F file=@companies.xlsx http://localhost:8000/upload
 # {"id":"<id>","filename":"companies.xlsx","kind":"xlsx","sheets":["Sheet1"],"max_rows":5000}
-curl -X POST http://localhost:8000/upload/<id>/resolve \
+curl -b jar.txt http://localhost:8000/upload/<id>/preview
+curl -b jar.txt -X POST http://localhost:8000/upload/<id>/resolve \
   -H 'Content-Type: application/json' -d '{"column": 0, "region": "us"}'
-curl http://localhost:8000/upload/<id>/status
-curl -OJ http://localhost:8000/upload/<id>/download
+curl -b jar.txt http://localhost:8000/upload/<id>/status
+curl -b jar.txt -OJ http://localhost:8000/upload/<id>/download
 ```
 
 ### `POST /resolve/batch`
@@ -293,7 +298,7 @@ curl -X POST http://localhost:8000/resolve/batch \
 `422` for an empty list, more than `BATCH_MAX_NAMES` names, or a blank or over-200-character name.
 
 ### `GET /metrics`
-Counters and request latency in Prometheus text format (not listed in `/docs`; `404` through the nginx proxy, so read it from inside: `docker compose exec api python -c "import urllib.request as u; print(u.urlopen('http://127.0.0.1:8000/metrics').read().decode())"`). Needs the API key when `API_KEY` is set. Series: `http_requests_total{method,path,status}` (route templates, never user text), `http_request_duration_seconds` (histogram), `resolutions_total{source,status}` (`source` is `local`, `wikidata`, `gleif` or `none`; a 503 is counted with its status code), `wikidata_unavailable_total`, `wikidata_busy_total` (requests that waited too long for a Wikidata slot), `rate_limited_total{scope}`, `auth_failures_total` and `process_uptime_seconds`. Counters reset when the process restarts.
+Counters and request latency in Prometheus text format (not listed in `/docs`; `404` through the Caddy proxy, so read it from inside: `docker compose exec api python -c "import urllib.request as u; print(u.urlopen('http://127.0.0.1:8000/metrics').read().decode())"`). Needs the API key when `API_KEY` is set, as `X-API-Key` or `Authorization: Bearer` (Prometheus uses the bearer form); without it the answer is `401`. Series: `http_requests_total{method,path,status}` (route templates, never user text), `http_request_duration_seconds` (histogram), `resolutions_total{source,status}` (`source` is `local`, `wikidata`, `gleif` or `none`; a 503 is counted with its status code), `wikidata_unavailable_total`, `wikidata_busy_total` (requests that waited too long for a Wikidata slot), `rate_limited_total{scope}`, `auth_failures_total` and `process_uptime_seconds`. Counters reset when the process restarts.
 
 ### `GET /health`
 Check that the service is running.
@@ -391,13 +396,15 @@ Answers to questions raised during user testing (issues #42 to #92).
 
 ## Operating the service
 
-**Protection (all optional, set in `.env`).** The demo runs open. To lock it down: set `API_KEY` (batch and metrics need `X-API-Key`; add `API_KEY_PROTECT_ALL=true` for a script-only deployment), and tune the `RATE_LIMIT_*` values. Limits are per client address, in memory, per process, which fits the single container. Behind the nginx proxy the client address is the one nginx saw (it overwrites `X-Forwarded-For`; see below). JSON bodies over `MAX_BODY_BYTES` get `413` before they are read in full. At most `WIKIDATA_MAX_CONCURRENT` Wikidata lookups run at once; others wait up to `WIKIDATA_QUEUE_SECONDS` and then get `503`, so one script cannot exhaust Wikimedia's patience for everyone. The GLEIF daily budget is unchanged.
+**Protection (all optional, set in `.env`).** The demo runs open. To lock it down: set `API_KEY` (batch and metrics need `X-API-Key` or `Authorization: Bearer`; add `API_KEY_PROTECT_ALL=true` for a script-only deployment), and tune the `RATE_LIMIT_*` values. Limits are per client address, in memory, per process, which fits the single container. Behind the Caddy proxy the client address is the one Caddy saw (it overwrites `X-Forwarded-For`). Caddy has no rate limiter of its own, so these limits are the only ones.
+
+**Caching.** `GET /` (the page, which changes with each deploy) is sent with `Cache-Control: no-cache`; every other response, including JSON answers, errors, upload status and downloads, with `no-store`, so no browser or shared cache keeps one user's answer. The page inlines its CSS and JavaScript, so there are no static files to cache for long. JSON bodies over `MAX_BODY_BYTES` get `413` before they are read in full. At most `WIKIDATA_MAX_CONCURRENT` Wikidata lookups run at once; others wait up to `WIKIDATA_QUEUE_SECONDS` and then get `503`, so one script cannot exhaust Wikimedia's patience for everyone. The GLEIF daily budget is unchanged.
 
 **Resilience.** Timeouts and 5xx from Wikidata are retried with backoff and jitter. HTTP 429 and bad replies are not retried (that would worsen throttling) and, as before, return `503` rather than `unresolved`. After `WIKIDATA_BREAKER_FAILURES` failed lookups in a row the circuit breaker opens: for `WIKIDATA_BREAKER_SECONDS` lookups get an immediate `503` and Wikidata is left alone, then one probe is let through. Local-index matches are never affected. On shutdown the app stops running upload jobs and saves where each stopped.
 
 **Uploads survive a restart.** Each job writes `meta.json` and `cache.json` next to its files in `UPLOAD_DIR` (a named volume in `compose.yml`). After a restart, finished jobs can still be downloaded until `UPLOAD_TTL_SECONDS`, and a job that was running comes back as an error saying to resolve again. Resolving the same upload again reuses every answer except `retry` rows, so a second run only repeats the lookups Wikidata could not answer. `cache.json` holds the company names from the file, so it has the same lifetime and the same confidentiality as the upload itself.
 
-**Logs.** `LOG_FORMAT=json` writes one object per line: time, level, logger, message and `request_id`. Each request also gets one access line with the method, the route template (not the URL or query), the status and the duration. The id is returned in the `X-Request-ID` response header, and a valid incoming `X-Request-ID` is kept, so a request can be followed through nginx and the app. Company names, spreadsheet cells and file names are never logged; there is a test for it.
+**Logs.** `LOG_FORMAT=json` writes one object per line: time, level, logger, message and `request_id`. Each request also gets one access line with the method, the route template (not the URL or query), the status and the duration. The id is returned in the `X-Request-ID` response header, and a valid incoming `X-Request-ID` is kept, so a request can be followed through Caddy and the app. Company names, spreadsheet cells and file names are never logged; there is a test for it.
 
 **Deploying and verifying a build.**
 
@@ -407,9 +414,9 @@ curl http://$HOST/health        # "build" must equal the commit you meant to dep
 docker compose ps               # api and proxy should both be "healthy"
 ```
 
-**Container and proxy hardening.** The image is non-root (uid 1000), pinned to `python:3.12-slim-bookworm` and the uv `0.9.5` image, has a stdlib health check, and starts uvicorn with `--timeout-graceful-shutdown 20` (compose waits `stop_grace_period: 30s`). Compose sets memory, CPU and pid limits, `no-new-privileges`, drops all capabilities for the API, rotates container logs and adds a proxy health check. `nginx.conf` limits request rate and connections per IP, caps JSON bodies at 512 KB and uploads at 12 MB, drops slow clients, streams uploads without buffering, returns `404` for `/metrics`, and overwrites `X-Forwarded-For` with the real client address (appending to a client-supplied value would let anyone fake the address the app rate-limits on). **None of the compose or nginx changes has been run on a live host** (no Docker or nginx was available where they were written), so after the first start check `docker compose ps`, `docker compose exec proxy nginx -t`, an upload through port 80, and `docker compose logs api` for permission errors on `/data/uploads`. Base images are pinned by tag, not digest; pinning digests needs registry access.
+**Container and proxy hardening.** The image is non-root (uid 1000), built from `python:3.12-slim-bookworm` and the uv `0.9.5` image, both pinned by digest, has a stdlib health check, and starts uvicorn with `--timeout-graceful-shutdown 20` (compose waits `stop_grace_period: 30s`). Compose sets memory, CPU and pid limits, `no-new-privileges`, drops all capabilities (the proxy keeps only `NET_BIND_SERVICE` for ports 80 and 443), rotates container logs and adds a proxy health check. The proxy image is `caddy:2.11.8-alpine`, pinned by digest. The `Caddyfile` turns HTTP/3 off (so no UDP port), drops clients slow to send headers, caps JSON bodies at 512 KB and uploads at 12 MB (answering in JSON), returns `404` for `/metrics`, and overwrites `X-Forwarded-For` with the real client address (appending to a client-supplied value would let anyone fake the address the app rate-limits on). It also serves `http://127.0.0.1` for checks run on the instance (`deploy.sh`, the health check), only to private and loopback addresses. **The Caddy setup has not been run on a live host** (no Docker was available where it was written; the Caddyfile passes `caddy validate` with Caddy 2.11.8). After the first start check `docker compose ps`, `curl -vI https://$HOST/health`, an upload through the web page, and `docker compose logs proxy api`.
 
-**Security review.** Checked and found sound: uploaded file names are used only for display and the download name (reduced to `[\w.\- ]` so they cannot reach the `Content-Disposition` header); job ids are random 128-bit hex checked against a pattern before touching the disk, and a job directory read back after a restart cannot point outside itself; uploads stream to disk under a size limit, with zip-bomb limits on `.xlsx` and read-only workbook loading; CSV and Excel cells that could run as formulas are neutralized; outbound requests go only to the fixed Wikidata and GLEIF hosts, with user text only as URL-encoded query values (no SSRF surface); no user text reaches logs, metric labels (route templates and a fixed set of methods only) or response headers. Known gaps: `openpyxl` parses `.xlsx` XML without `defusedxml` (not installed, and adding it needs a lock update), so a crafted file could use XML entity expansion up to the existing 200 MB uncompressed limit; the app has no TLS (terminate it in front, since the proxy listens on port 80); rate limits and the job store are per process, so running more than one API replica would multiply them.
+**Security review.** Checked and found sound: uploaded file names are used only for display and the download name (reduced to `[\w.\- ]` so they cannot reach the `Content-Disposition` header); job ids are random 128-bit hex checked against a pattern before touching the disk, and a job directory read back after a restart cannot point outside itself; uploads stream to disk under a size limit, with zip-bomb limits on `.xlsx` and read-only workbook loading; CSV and Excel cells that could run as formulas are neutralized; outbound requests go only to the fixed Wikidata and GLEIF hosts, with user text only as URL-encoded query values (no SSRF surface); no user text reaches logs, metric labels (route templates and a fixed set of methods only) or response headers. Known gaps: `openpyxl` parses `.xlsx` XML without `defusedxml` (not installed, and adding it needs a lock update), so a crafted file could use XML entity expansion up to the existing 200 MB uncompressed limit; TLS is handled by Caddy, so the app itself never sees a certificate; rate limits and the job store are per process, so running more than one API replica would multiply them.
 
 **Load test.** `scripts/loadtest.py` runs the real app in process with a fake Wikidata (it never touches the network):
 

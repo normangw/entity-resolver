@@ -44,7 +44,8 @@ class Settings(BaseSettings):
     upload_max_running: int = Field(default=3, gt=0)
 
     # --- Abuse and cost protection -------------------------------------------
-    # Optional shared secret, sent as the X-API-Key header. Unset means no key is
+    # Optional shared secret, sent as the X-API-Key header or as
+    # "Authorization: Bearer <key>" (what Prometheus sends). Unset means no key is
     # needed (the public demo). When set it is required on /resolve/batch and
     # /metrics, and on every other data endpoint too if api_key_protect_all is true
     # (the web page cannot send a key, so that setting turns the page off).
@@ -76,6 +77,15 @@ class Settings(BaseSettings):
     # Identifies the deployed build in /health. Set at image build time, e.g.
     # BUILD_ID=$(git rev-parse --short HEAD) docker compose up -d --build
     build_id: str = "unknown"
+
+    # --- Reverse proxy (read by Caddy through compose.yml, not by the app) -------
+    # Declared here because Settings refuses unknown keys in .env, and compose reads
+    # these from the same .env. SITE_ADDRESS is the public DNS name, which makes
+    # Caddy get a Let's Encrypt certificate; the default ":80" is plain HTTP for a
+    # local `docker compose up`. ACME_CA switches to the staging CA if Let's Encrypt
+    # rate-limits us.
+    site_address: str = ":80"
+    acme_ca: str = "https://acme-v02.api.letsencrypt.org/directory"
 
     model_config = SettingsConfigDict(
         env_file=".env",
