@@ -176,9 +176,13 @@ To prove the restore works from nothing, empty the volume first (the drill):
 ```bash
 docker compose down
 docker volume rm entity-resolver_alias-index
-docker compose up -d                   # serves the seed index, /ready is 200
+docker compose up -d                   # the api restarts in a loop: .env points at a missing index
 scripts/load_index.sh backups/alias-index-<date>.tar.gz
+docker compose up -d                   # now healthy; start the proxy if it was waiting
 ```
+
+The api refusing to start without its index is deliberate: it never silently
+serves the 5-company seed in production.
 
 <!-- TODO(#106): paste real output of the restore drill -->
 
