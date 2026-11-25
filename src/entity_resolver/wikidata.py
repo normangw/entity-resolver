@@ -25,6 +25,7 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
+from entity_resolver.observability import metrics
 from entity_resolver.resolver import Entity, Match, normalize
 
 logger = logging.getLogger(__name__)
@@ -156,10 +157,12 @@ class CircuitBreaker:
             self._opened_at = None
 
     def failure(self) -> None:
-        """Count one more failure, and open the breaker at ``threshold``."""
+        """Count a failure and record when the circuit breaker opens."""
         with self._lock:
             self._failures += 1
             if self._failures >= self._threshold:
+                if self._opened_at is None:
+                    metrics.inc("wikidata_breaker_opens_total")
                 self._opened_at = self._clock()
 
     @property
@@ -253,14 +256,17 @@ class WikidataClient:
             cached = self._cache.get(key)
             if cached is not None and self._clock() - cached[0] < self._ttl:
                 self._cache.move_to_end(key)
+                metrics.inc("wikidata_cache_requests_total", result="hit")
                 return cached[1]
+        if self._ttl > 0:
+            metrics.inc("wikidata_cache_requests_total", result="miss")
         if not self.breaker.allow():
             raise WikidataUnavailable("circuit open: Wikidata keeps failing")
         try:
             match = self._lookup(name, language)
         except (OSError, ValueError) as exc:  # network failure or bad JSON
-            # The name is user input, so it is not logged.
-            logger.warning("Wikidata lookup failed: %s", exc)
+            # External error text may contain a private company name or URL.
+            logger.warning("Wikidata lookup failed")
             self.breaker.failure()
             raise WikidataUnavailable(str(exc)) from exc
         self.breaker.success()
@@ -273,10 +279,14 @@ class WikidataClient:
         return match
 
     def _fetch(self, params: dict[str, str]) -> dict[str, Any]:
-        """One API call, retried on timeouts and 5xx with backoff and jitter."""
+        """Time each API attempt, retrying timeouts and 5xx with backoff and jitter."""
         for attempt in range(self._retries + 1):
             try:
-                return self._raw_fetch(params)
+                started = time.perf_counter()
+                try:
+                    return self._raw_fetch(params)
+                finally:
+                    metrics.observe_wikidata(time.perf_counter() - started)
             except Exception as exc:
                 if attempt == self._retries or not _retryable(exc):
                     raise
