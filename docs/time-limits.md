@@ -6,7 +6,8 @@ normal request for that hop and below the limit of the hop in front of it, so a
 slow dependency turns into a clear error (`503` with `Retry-After`, a `retry` row,
 or a page message) instead of a hang.
 
-`docs/architecture.md` shows where each one sits in the diagram.
+`docs/architecture.md` shows where each one sits in the diagrams, where row 7 is
+labelled **T7**, and so on.
 
 ## Measured baselines
 
