@@ -10,6 +10,8 @@ Writes one JSON object per line: ``query``, ``expected`` (Wikidata ID or null),
 - typo, suffix, multilingual, ambiguous: generated from the index with a fixed
   seed, so they are reproducible but synthetic (the label is true by construction).
 - not_listed: private companies and gibberish that must come back unresolved.
+- junk, same_name, non_company: hand-written placeholders, names shared by several
+  companies, and organizations that are not companies (the Homework 3 cases).
 
 Every hand-written entry is checked against the index; ones that cannot be placed
 are reported and left out instead of being guessed.
@@ -102,6 +104,55 @@ NOT_LISTED = [
     "Acme Widget Corp of Atlantis",
     "blah blah",
     "Q",
+]
+
+# Placeholders and junk seen in real vendor columns and in the Homework 3 tests
+# (#33, #35, #85). None of them is a company, so all must stay unresolved.
+JUNK = [
+    "TBD",
+    "N/A",
+    "n/a",
+    "T",
+    "-",
+    "???",
+    "\U0001f3e2",  # office-building emoji
+    "Unknown",
+    "TBA",
+    "null",
+    "12345",
+    "asdf qwer",
+]
+
+# One name, several companies in the index (#75). The id is the one a user almost
+# always means: the top-level listed company, not a subsidiary or a namesake.
+# Ids are used instead of labels because the labels themselves collide.
+SAME_NAME = [
+    ("Tesco", "Q487494"),  # not Tesco Corporation (US)
+    ("Tesco PLC", "Q487494"),
+    ("Siemens AG", "Q81230"),  # not Siemens Limited (India)
+    ("Siemens", "Q81230"),
+    ("Broadcom", "Q790060"),  # Broadcom Inc., not its Broadcom Corporation unit
+    ("Broadcom Inc.", "Q790060"),
+    ("Shell", "Q154950"),  # not Showa Shell Sekiyu, which also has "Shell"
+    ("Delta", "Q188920"),  # Delta Air Lines
+    ("HSBC Bank", "Q190464"),  # not HSBC Bank (Taiwan)
+    ("Samsung", "Q20718"),  # Samsung Electronics, the listed one
+    ("Sony", "Q41187"),
+]
+
+# Organizations and places that are not companies (#78). Kept even when one
+# exactly matches an index alias: that is a failure the set should show.
+NON_COMPANY = [
+    "Georgetown University",
+    "United Nations",
+    "World Health Organization",
+    "Harvard University",
+    "European Union",
+    "Empire State Building",
+    "Red Cross",
+    "City of Chicago",
+    "NASA",
+    "World Bank",
 ]
 
 EU_CODES = REGIONS["eu"]
@@ -213,6 +264,16 @@ def main() -> None:
             print(f"DROPPED not_listed {name!r}: exactly matches an index alias")
             continue
         rows.append({"query": name, "expected": None, "category": "not_listed"})
+
+    for name in JUNK:
+        rows.append({"query": name, "expected": None, "category": "junk"})
+    for query, qid in SAME_NAME:
+        if qid not in owner:
+            print(f"SKIPPED same_name {query!r}: {qid} is not in the index")
+            continue
+        rows.append({"query": query, "expected": qid, "category": "same_name"})
+    for name in NON_COMPANY:
+        rows.append({"query": name, "expected": None, "category": "non_company"})
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
