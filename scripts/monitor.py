@@ -96,9 +96,14 @@ def is_local(case: dict[str, Any]) -> bool:
 
 
 def call(
-    base: str, path: str, body: dict[str, Any] | None = None, timeout: float = 15
+    base: str, path: str, body: dict[str, Any] | None = None, timeout: float = 30
 ) -> tuple[int, Any, float]:
-    """One request: (HTTP status, parsed JSON or None, seconds taken)."""
+    """One request: (HTTP status, parsed JSON or None, seconds taken).
+
+    ``timeout`` (30 s) is above the server's worst case for one Wikidata-backed
+    ``/resolve``: queue 5 s + lookup deadline 15 s + one call 10 s (see
+    docs/time-limits.md), so a slow but working server is not reported as down.
+    """
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(
         base.rstrip("/") + path,
