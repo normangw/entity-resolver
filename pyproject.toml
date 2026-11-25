@@ -1,6 +1,6 @@
 [project]
 name = "entity-resolver"
-version = "0.1.0"
+version = "0.2.0"
 description = "Multilingual company entity resolution API"
 authors = [{ name = "Norman" }]
 readme = "README.md"

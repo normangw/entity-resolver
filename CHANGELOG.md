@@ -9,6 +9,15 @@ third.
 
 ## Unreleased
 
+Nothing yet.
+
+## v0.2.0 (2026-11-25)
+
+Deliverable 3: the first release deployed from a published image. Upgrading from
+`main` before this release: copy `.env.production.example` to `.env`, set `API_KEY`
+and `SITE_ADDRESS`, run `scripts/load_index.sh` once, then `scripts/deploy.sh 0.2.0`
+(see `docs/runbook.md`).
+
 ### Changed
 - `/health` and `/docs` report the version from `pyproject.toml`. The `APP_VERSION`
   setting is gone; remove it from your `.env` (it is now ignored).
@@ -58,14 +67,25 @@ third.
 - Settings `SCORER` (swap the RapidFuzz scorer with a `.env` edit), `WIKIDATA_API_URL`,
   `WIKIDATA_DEADLINE_SECONDS` and `WIKIDATA_MAX_RETRY_AFTER`.
 - `docs/time-limits.md`: every timeout, where it is set and why.
+- Operator docs: `docs/runbook.md`, `docs/architecture.md` (supersedes
+  `docs/deliverable2/`), `docs/scaling.md`, `docs/security.md`, `docs/drills.md`.
+- The evaluation covers junk input, same-name companies and non-companies, and can
+  run through the service path (`scripts/evaluate.py --service`); see
+  `eval/README.md`.
+
+### Fixed
+- With `language` set to `zh`, `ja`, `de`, `fr` or `es`, a Wikidata match returns its
+  translated name in `label` (it was always empty).
+- Saving an upload job's answers no longer blocks other requests while it writes.
 
 ## v0.1.0 (2026-11-12)
 
 Everything on `main` before Deliverable 3: the walking skeleton testers used in
-Homework 3, plus the hardening that followed their findings. Tag `v0.1.0` marks commit
-`9031f63`, for history only: it predates the release pipeline, so there is no
-`ghcr.io/normangw/entity-resolver:0.1.0` image and `scripts/deploy.sh` cannot deploy
-or roll back to it. The first deployable release is v0.2.0.
+Homework 3, plus the hardening that followed their findings. It was never tagged:
+there is no `v0.1.0` tag (the only tags are `blocking-resolve` and `hw2-submission`),
+and the state it describes is commit `9031f63`. It predates the release pipeline, so
+there is no `ghcr.io/normangw/entity-resolver:0.1.0` image and `scripts/deploy.sh`
+cannot deploy or roll back to it. The first deployable release is v0.2.0.
 
 ### Added
 - `POST /resolve`: a company name in, the canonical name, Wikidata id, parent company,
