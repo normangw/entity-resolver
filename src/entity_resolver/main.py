@@ -5,10 +5,11 @@ import datetime as dt
 import hashlib
 import hmac
 import logging
+import math
 import re
 import secrets
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -23,6 +24,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse, PlainTextResponse
+from rapidfuzz import fuzz
 
 from entity_resolver import __version__, tabular, uploads
 from entity_resolver.config import settings
@@ -58,12 +60,32 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+# The scorers SCORER may name. Swapping one is a .env edit and a restart.
+SCORERS: dict[str, Callable[..., float]] = {
+    "ratio": fuzz.ratio,
+    "WRatio": fuzz.WRatio,
+    "token_set_ratio": fuzz.token_set_ratio,
+}
+# Retry-After (seconds) on a 503 while the index loads; loading takes seconds.
+_LOADING_RETRY_AFTER = "5"
+
+
+def _loading() -> HTTPException:
+    """The 503 sent while the alias index is still loading."""
+    return HTTPException(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "Model is still loading",
+        headers={"Retry-After": _LOADING_RETRY_AFTER},
+    )
+
+
 def _load_resolver() -> Resolver:
     """Build the alias-index resolver from the current settings."""
     return Resolver(
         settings.alias_index_path,
         threshold=settings.match_threshold,
         delay_seconds=settings.model_delay_seconds,
+        scorer=SCORERS[settings.scorer],
     )
 
 
@@ -95,6 +117,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             breaker=CircuitBreaker(
                 settings.wikidata_breaker_failures, settings.wikidata_breaker_seconds
             ),
+            api_url=settings.wikidata_api_url,
+            deadline=settings.wikidata_deadline_seconds,
+            max_retry_after=settings.wikidata_max_retry_after,
         )
         if settings.wikidata_fallback
         else None
@@ -154,6 +179,7 @@ async def ready(request: Request, response: Response) -> ReadyResponse:
     """Report whether the alias index has finished loading at startup."""
     if getattr(request.app.state, "resolver", None) is None:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        response.headers["Retry-After"] = _LOADING_RETRY_AFTER
         return ReadyResponse(status="not ready")
     return ReadyResponse(status="ready")
 
@@ -192,24 +218,31 @@ async def _wikidata_lookup(
     """One Wikidata lookup under the global concurrency cap.
 
     A wait longer than ``WIKIDATA_QUEUE_SECONDS`` or an unavailable Wikidata (error,
-    HTTP 429, open circuit breaker) is a 503, never "unresolved".
+    HTTP 429, open circuit breaker, deadline) is a 503, never "unresolved". Every
+    such 503 carries ``Retry-After``: Wikidata's own after a 429, the breaker's
+    remaining cooldown, or a few seconds otherwise.
     """
-    unavailable = HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="Wikidata is unavailable; retry shortly",
-    )
+
+    def unavailable(retry_after: float) -> HTTPException:
+        """The 503 for a Wikidata that cannot answer now."""
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Wikidata is unavailable; retry shortly",
+            headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+        )
+
     gate: asyncio.Semaphore | None = getattr(state, "wikidata_gate", None)
     if gate is not None:
         try:
             await asyncio.wait_for(gate.acquire(), settings.wikidata_queue_seconds)
         except TimeoutError:
             metrics.inc("wikidata_busy_total")
-            raise unavailable from None
+            raise unavailable(settings.wikidata_queue_seconds) from None
     try:
         return await asyncio.to_thread(wikidata.lookup, candidate, language)
     except WikidataUnavailable as exc:
         metrics.inc("wikidata_unavailable_total")
-        raise unavailable from exc
+        raise unavailable(exc.retry_after) from exc
     finally:
         if gate is not None:
             gate.release()
@@ -366,10 +399,7 @@ def _upload_resolver(state, region: str, language: str = "en"):
 async def resolve(body: ResolveRequest, request: Request) -> ResolveResponse:
     """Resolve a company name to its canonical entity."""
     if request.app.state.resolver is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Model is still loading",
-        )
+        raise _loading()
     return await resolve_name(
         request.app.state, body.company_name, body.region, body.language
     )
@@ -389,9 +419,7 @@ async def resolve_batch(body: BatchRequest, request: Request) -> BatchResponse:
     """
     state = request.app.state
     if state.resolver is None:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "Model is still loading"
-        )
+        raise _loading()
     if len(body.company_names) > settings.batch_max_names:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -559,13 +587,16 @@ async def upload_preview(
 async def upload_resolve(
     job_id: str, body: UploadRunRequest, request: Request
 ) -> UploadStatus:
-    """Start resolving the chosen column in the background."""
+    """Start resolving the chosen column in the background.
+
+    A second start while a run is active is a 409; the job is marked running
+    before the sheet is read, so two starts sent at once cannot both pass. A start
+    after a run has finished is a re-run that redoes only the ``retry`` rows.
+    """
     state = request.app.state
     job = _job(request, job_id)
     if state.resolver is None:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "Model is still loading"
-        )
+        raise _loading()
     if job.state == "running":
         raise HTTPException(
             status.HTTP_409_CONFLICT, "This file is already being resolved"
@@ -574,7 +605,10 @@ async def upload_resolve(
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Other files are being resolved. Try again soon.",
+            headers={"Retry-After": "30"},
         )
+    before = (job.state, job.done, job.total)
+    job.state, job.done, job.total = "running", 0, 0  # claims the job (see above)
     try:
         table = await asyncio.to_thread(
             uploads.load_table,
@@ -585,8 +619,12 @@ async def upload_resolve(
             settings.upload_max_rows,
         )
     except tabular.UploadError as exc:
+        job.state, job.done, job.total = before
         raise _bad_file(exc) from None
-    except Exception:
+    except BaseException as exc:
+        job.state, job.done, job.total = before
+        if not isinstance(exc, Exception):
+            raise  # cancelled: put the job back and stop
         logger.exception("Could not load the uploaded table")
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "This spreadsheet could not be read."
