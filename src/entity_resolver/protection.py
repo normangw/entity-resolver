@@ -24,6 +24,7 @@ class RateLimiter:
     """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        """Empty buckets. ``clock`` is injectable so tests need not sleep."""
         self._clock = clock
         self._lock = threading.Lock()
         self._buckets: dict[tuple[str, str], tuple[float, float]] = {}
@@ -56,6 +57,7 @@ limiter = RateLimiter()
 
 
 def _client(request: Request) -> str:
+    """The client address, or ``unknown`` when the request has none."""
     return request.client.host if request.client else "unknown"
 
 
@@ -63,6 +65,7 @@ def rate_limit(scope: str) -> Callable[[Request], None]:
     """A dependency that answers 429 with Retry-After when a client is too fast."""
 
     def dependency(request: Request) -> None:
+        """Raise 429 with Retry-After when this client is over the limit."""
         per_minute = {
             "resolve": settings.rate_limit_resolve_per_min,
             "batch": settings.rate_limit_batch_per_min,
@@ -89,6 +92,7 @@ def api_key(strict: bool) -> Callable[[Request], None]:
     """
 
     def dependency(request: Request) -> None:
+        """Raise 401 when a key is required and the request does not carry it."""
         expected = settings.api_key
         if not expected or not (strict or settings.api_key_protect_all):
             return
@@ -112,9 +116,11 @@ class BodyLimitMiddleware:
     """
 
     def __init__(self, app: ASGIApp) -> None:
+        """Wrap ``app`` and refuse JSON bodies over the configured size."""
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Pass the request on, or answer 413 once the body exceeds the limit."""
         if (
             scope["type"] != "http"
             or scope["method"] not in ("POST", "PUT", "PATCH")
@@ -131,6 +137,7 @@ class BodyLimitMiddleware:
         rejected = False
 
         async def counting_receive() -> Message:
+            """Read the body, and stop the app once more than the limit has arrived."""
             nonlocal seen, rejected
             message = await receive()
             if message["type"] == "http.request":
@@ -142,6 +149,7 @@ class BodyLimitMiddleware:
             return message
 
         async def guarded_send(message: Message) -> None:
+            """Forward the app's response, unless the body was already rejected."""
             if rejected:
                 return
             await send(message)
@@ -152,6 +160,7 @@ class BodyLimitMiddleware:
 
     @staticmethod
     async def _reject(send: Send) -> None:
+        """Send the 413 JSON response."""
         body = json.dumps({"detail": "Request body is too large."}).encode()
         await send(
             {

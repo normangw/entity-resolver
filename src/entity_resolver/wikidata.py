@@ -82,7 +82,10 @@ Fetch = Callable[[dict[str, str]], dict[str, Any]]
 
 
 def _http_fetch(timeout: float) -> Fetch:
+    """A blocking Wikidata caller that gives up after ``timeout`` seconds."""
+
     def fetch(params: dict[str, str]) -> dict[str, Any]:
+        """GET the API with ``params`` and return the JSON object."""
         query = urllib.parse.urlencode({**params, "format": "json"})
         request = urllib.request.Request(
             f"{_API}?{query}", headers={"User-Agent": _USER_AGENT}
@@ -124,6 +127,10 @@ class CircuitBreaker:
         cooldown: float = 30.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        """Open after ``threshold`` failures and stay open for ``cooldown`` seconds.
+
+        ``clock`` is injectable so tests can move time without sleeping.
+        """
         self._threshold = threshold
         self._cooldown = cooldown
         self._clock = clock
@@ -132,6 +139,7 @@ class CircuitBreaker:
         self._lock = threading.Lock()
 
     def allow(self) -> bool:
+        """True when a call may go out. A call past the cooldown is the probe."""
         with self._lock:
             if self._opened_at is None:
                 return True
@@ -142,11 +150,13 @@ class CircuitBreaker:
             return False
 
     def success(self) -> None:
+        """Close the breaker and clear the failure count."""
         with self._lock:
             self._failures = 0
             self._opened_at = None
 
     def failure(self) -> None:
+        """Count one more failure, and open the breaker at ``threshold``."""
         with self._lock:
             self._failures += 1
             if self._failures >= self._threshold:
@@ -154,6 +164,7 @@ class CircuitBreaker:
 
     @property
     def is_open(self) -> bool:
+        """True after the breaker opens, until a success closes it."""
         with self._lock:
             return self._opened_at is not None
 
@@ -274,6 +285,12 @@ class WikidataClient:
         raise AssertionError("unreachable")  # pragma: no cover
 
     def _lookup(self, name: str, language: str) -> Match | None:
+        """The best company Wikidata has for ``name``, or None.
+
+        Search is always in English. ``language`` only chooses the labels that come
+        back. Several companies sharing a name are broken by score, then by how many
+        Wikipedia sitelinks the entity has.
+        """
         # Always search in English so the same name finds the same company whatever
         # the display language is; ``language`` only chooses the labels we return.
         hits = self._fetch(
@@ -327,6 +344,11 @@ class WikidataClient:
     def _build(
         self, hit: dict[str, Any], claims: dict[str, Any], score: float, language: str
     ) -> Match:
+        """A match from one search hit, including its parent and headquarters.
+
+        ``canonical_name`` stays English. When ``language`` is not English the
+        display name goes in ``label``.
+        """
         name = hit.get("label", hit["id"])
         canonical = name
         if language != "en":
@@ -378,6 +400,7 @@ class WikidataClient:
         return owners
 
     def _is_human(self, qid: str) -> bool:
+        """True when ``qid`` is an instance of human."""
         claims = self._fetch(
             {"action": "wbgetclaims", "entity": qid, "property": "P31"}
         )["claims"]
@@ -402,6 +425,7 @@ class WikidataClient:
         return None
 
     def _labels(self, ids: list[str], language: str) -> dict[str, str]:
+        """Labels for ``ids`` in ``language``, falling back to English."""
         if not ids:
             return {}
         entities = self._fetch(

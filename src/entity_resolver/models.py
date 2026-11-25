@@ -1,3 +1,5 @@
+"""Request and response bodies for the resolve and upload endpoints."""
+
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -32,6 +34,7 @@ class ResolveRequest(BaseModel):
     @field_validator("company_name")
     @classmethod
     def not_blank(cls, v: str) -> str:
+        """Reject a name that is only whitespace, and return it stripped."""
         if not v.strip():
             raise ValueError("company_name must not be blank")
         return v.strip()
@@ -71,6 +74,7 @@ class BatchRequest(BaseModel):
     @field_validator("company_names")
     @classmethod
     def clean_names(cls, names: list[str]) -> list[str]:
+        """Strip each name. Reject a blank one or one over 200 characters."""
         out = [n.strip() for n in names]
         if any(not n or len(n) > 200 for n in out):
             raise ValueError("each name must be 1 to 200 characters and not blank")
@@ -121,6 +125,8 @@ class Check(BaseModel):
 
 
 class SampleRow(BaseModel):
+    """One resolved row shown in an upload summary."""
+
     input: str
     status: str
     canonical_name: str | None

@@ -106,6 +106,7 @@ def normalize(name: str) -> str:
     text = _DOTTED_ABBREV.sub("", text)
 
     def clean(value: str) -> str:
+        """Drop punctuation and collapse whitespace."""
         value = re.sub(r"[^\w\s]", " ", value)
         return re.sub(r"\s+", " ", value).strip()
 
@@ -134,6 +135,7 @@ def variants(name: str) -> list[str]:
     out: list[str] = []
 
     def add(value: str) -> None:
+        """Append ``value`` once, after stripping trailing separators."""
         value = value.strip(" ,;-")
         if value and value not in out:
             out.append(value)
@@ -154,6 +156,8 @@ def note_for(name: str) -> str | None:
 
 @dataclass(frozen=True)
 class Entity:
+    """One company, from the alias index or from a Wikidata lookup."""
+
     wikidata_id: str
     canonical_name: str
     parent_company: str | None
@@ -165,6 +169,8 @@ class Entity:
 
 @dataclass(frozen=True)
 class Match:
+    """A chosen company, its name score, and whether another company tied."""
+
     entity: Entity
     score: float  # 0.0 - 1.0
     # True when a different company scored the same, so the pick is arbitrary.
@@ -188,6 +194,12 @@ class Resolver:
         delay_seconds: float = 0.0,
         scorer: Callable[..., float] = fuzz.ratio,
     ) -> None:
+        """Load the alias index at ``index_path``.
+
+        An alias that normalizes to nothing is skipped. ``threshold`` is the lowest
+        score ``resolve`` will accept. ``delay_seconds`` pauses each lookup, and
+        ``scorer`` is the RapidFuzz function (``ratio`` by default).
+        """
         records = json.loads(index_path.read_text(encoding="utf-8"))
         self._threshold = threshold
         self._scorer = scorer

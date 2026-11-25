@@ -56,6 +56,8 @@ Resolve = Callable[[str], Awaitable[ResolveResponse]]
 
 @dataclass
 class Job:
+    """One uploaded file and how far its resolve job has got."""
+
     id: str
     dir: Path
     filename: str  # as uploaded; only ever used for display and the download name
@@ -160,6 +162,7 @@ class JobStore:
     """Jobs in memory, their files on disk, both dropped after ``ttl`` seconds."""
 
     def __init__(self, root: Path, ttl: int, max_running: int) -> None:
+        """Store ``root``, ``ttl`` and ``max_running``, and reload jobs left on disk."""
         self.root = root
         self.ttl = ttl
         self.max_running = max_running
@@ -186,6 +189,7 @@ class JobStore:
         return job
 
     def save(self, job: Job) -> None:
+        """Write this job's state so a restart can find it again."""
         save_job(job)
 
     def get(self, job_id: str) -> Job | None:
@@ -198,9 +202,11 @@ class JobStore:
         return job
 
     def running(self) -> int:
+        """How many jobs are resolving right now."""
         return sum(1 for job in self._jobs.values() if job.state == "running")
 
     def discard(self, job_id: str) -> None:
+        """Cancel the job, drop it from memory and delete its directory."""
         job = self._jobs.pop(job_id, None)
         if job is not None and job.task is not None:
             job.task.cancel()
@@ -241,6 +247,8 @@ class JobStore:
 
 @dataclass(frozen=True)
 class Table:
+    """The sheet to resolve: its labels, data rows and the company-name column."""
+
     labels: list[str]
     data: list[list[Any]]  # data rows only, padded to one width
     column: int  # index of the company-name column
@@ -373,6 +381,7 @@ def verify_output(
     checks: list[Check] = []
 
     def add(name: str, ok: bool, detail: str) -> None:
+        """Record one integrity check."""
         checks.append(Check(name=name, ok=ok, detail=detail))
 
     add(
