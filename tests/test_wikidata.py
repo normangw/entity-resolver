@@ -428,25 +428,67 @@ def test_generic_word_never_reaches_wikidata():
 
 
 def test_translated_name_goes_in_label_and_canonical_stays_english():
+    """The label is fetched in the requested language (#113).
+
+    Search runs with ``uselang=en``, so live Wikidata returns the English label on
+    the hit and the Chinese text only as the matched alias. The fake does the same.
+    """
     claims = {"Q160120": {"P159": [statement("Q9")]}}
+    labels = {
+        "Q160120": {"en": "Huawei", "zh": "华为"},
+        "Q9": {"en": "Shenzhen", "zh": "深圳市"},
+    }
 
     def fetch(params: dict[str, str]) -> dict[str, Any]:
+        """Serve the search, claims and labels calls the way live Wikidata does."""
         if params["action"] == "wbsearchentities":
-            return {"search": [hit("Q160120", "华为")]}
+            found = {"type": "label", "language": "en", "text": "Huawei"}
+            if params["search"] == "华为":
+                found = {"type": "alias", "language": "zh", "text": "华为"}
+            return {"search": [{"id": "Q160120", "label": "Huawei", "match": found}]}
+        ids = params["ids"].split("|")
         if params["props"].startswith("claims"):
-            return {"entities": {"Q160120": {"claims": claims["Q160120"]}}}
+            return {"entities": {i: {"claims": claims.get(i, {})} for i in ids}}
+        wanted = params["languages"].split("|")
         return {
             "entities": {
-                "Q160120": {
-                    "labels": {"en": {"value": "Huawei"}, "zh": {"value": "华为"}}
+                i: {
+                    "labels": {
+                        lang: {"value": value}
+                        for lang, value in labels.get(i, {}).items()
+                        if lang in wanted
+                    }
                 }
+                for i in ids
             }
         }
 
-    match = WikidataClient(threshold=0.9, fetch=fetch).lookup("华为", "zh")
-    assert match is not None
-    assert match.entity.canonical_name == "Huawei"
-    assert match.entity.label == "华为"
+    for query in ("华为", "Huawei"):
+        match = WikidataClient(threshold=0.9, fetch=fetch).lookup(query, "zh")
+        assert match is not None
+        assert match.entity.canonical_name == "Huawei"
+        assert match.entity.label == "华为"
+        assert match.entity.headquarters == "深圳市"
+
+
+def test_label_is_empty_in_english_and_when_no_translation_exists():
+    """``label`` is None for English, and for a language Wikidata has no label in."""
+    claims = {"Q1": {"P452": [statement("Q2")]}}
+
+    def fetch(params: dict[str, str]) -> dict[str, Any]:
+        """Serve one company that has only an English label."""
+        if params["action"] == "wbsearchentities":
+            return {"search": [hit("Q1", "Acme")]}
+        ids = params["ids"].split("|")
+        if params["props"].startswith("claims"):
+            return {"entities": {i: {"claims": claims.get(i, {})} for i in ids}}
+        return {"entities": {i: {"labels": {"en": {"value": "Acme"}}} for i in ids}}
+
+    for language in ("en", "ja"):
+        match = WikidataClient(fetch=fetch).lookup("Acme", language)
+        assert match is not None
+        assert match.entity.canonical_name == "Acme"
+        assert match.entity.label is None
 
 
 def test_search_is_always_english_and_reads_more_hits():
