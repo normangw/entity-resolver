@@ -83,8 +83,21 @@ def rate_limit(scope: str) -> Callable[[Request], None]:
     return dependency
 
 
+def _given_key(request: Request) -> str:
+    """The key the caller sent: ``X-API-Key``, else ``Authorization: Bearer``.
+
+    Prometheus can only send the bearer form (``credentials_file``), scripts and
+    curl usually send ``X-API-Key``; both carry the same secret.
+    """
+    key = request.headers.get("x-api-key")
+    if key is not None:
+        return key
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
 def api_key(strict: bool) -> Callable[[Request], None]:
-    """A dependency checking X-API-Key.
+    """A dependency checking the API key (``X-API-Key`` or a bearer token).
 
     With no ``API_KEY`` configured nothing is checked. ``strict`` endpoints (batch,
     metrics) always need the key once it is set; the others only when
@@ -96,15 +109,50 @@ def api_key(strict: bool) -> Callable[[Request], None]:
         expected = settings.api_key
         if not expected or not (strict or settings.api_key_protect_all):
             return
-        given = request.headers.get("x-api-key", "")
+        given = _given_key(request)
         if not secrets.compare_digest(given.encode(), expected.encode()):
             metrics.inc("auth_failures_total")
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED,
-                "A valid X-API-Key header is required.",
+                "A valid API key is required (X-API-Key or Authorization: Bearer).",
+                headers={"WWW-Authenticate": "Bearer"},
             )
 
     return dependency
+
+
+class CacheControlMiddleware:
+    """Tell browsers and proxies what they may keep.
+
+    The page (``/``) changes with each deploy, so it is ``no-cache`` (keep it, but
+    ask the server each time). Everything else is a per-user answer, an upload's
+    status or result, or API docs, so it is ``no-store``: no shared cache may hold
+    one user's answer for another. There are no separate static files to cache for
+    long (the page inlines its CSS and JS). A response that already set the header
+    keeps it.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Wrap ``app`` so every HTTP response carries a Cache-Control header."""
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Pass the request on and add Cache-Control to the response."""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        value = b"no-cache" if scope["path"] == "/" else b"no-store"
+
+        async def send_with_header(message: Message) -> None:
+            """Add the header when the response starts, unless it is already set."""
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                if not any(k.lower() == b"cache-control" for k, _ in headers):
+                    headers.append((b"cache-control", value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_header)
 
 
 class BodyLimitMiddleware:
