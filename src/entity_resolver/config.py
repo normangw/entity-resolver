@@ -1,30 +1,55 @@
-"""Application settings, read from the environment and ``.env`` at startup."""
+"""Application settings, read from the environment and ``.env`` at startup.
+
+Every setting is listed in both ``.env.example`` (development) and
+``.env.production.example`` (deployment); ``tests/test_env_files.py`` fails when
+one is missing. A bad value stops the app at startup with the setting's name.
+"""
 
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, FilePath
+from pydantic import Field, FilePath, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEFAULT_INDEX = Path(__file__).parent / "data" / "companies.json"
+# Keys shorter than this are refused in production (``openssl rand -hex 32`` is 64).
+_MIN_KEY_LENGTH = 16
 
 
 class Settings(BaseSettings):
     """Load and validate application configuration at startup."""
 
+    # "production" turns on the checks in ``_check_profile``: an API key and JSON
+    # logs are required. The CI smoke test and local runs use "development".
+    environment: Literal["development", "production"] = "development"
     app_name: str = Field(default="Entity Resolver API", min_length=1)
     # The version is not a setting: it lives only in pyproject.toml and is read from
     # the installed package (entity_resolver.__version__), so it cannot drift.
     debug: bool = False
+    # Seconds for one Wikidata API call. A lookup makes 2 to 5 calls.
     wikidata_timeout: int = Field(default=10, gt=0)
     # On by default so brands and subsidiaries (YouTube, Instagram) resolve. Tests set
     # WIKIDATA_FALLBACK=false in tests/conftest.py so CI never touches the network.
     wikidata_fallback: bool = True
     # Seconds to remember a Wikidata answer (0 disables); it throttles quickly.
     wikidata_cache_ttl: float = Field(default=3600, ge=0, allow_inf_nan=False)
+    # The MediaWiki API to ask; another Wikibase (or a mock) is a .env change.
+    wikidata_api_url: str = Field(
+        default="https://www.wikidata.org/w/api.php", pattern=r"^https?://\S+$"
+    )
+    # Seconds one whole lookup (all its API calls, retries and waits) may take. No
+    # new call starts after it, so a lookup ends within this plus one
+    # wikidata_timeout. See docs/time-limits.md.
+    wikidata_deadline_seconds: float = Field(default=15.0, gt=0, allow_inf_nan=False)
+    # Longest Retry-After from Wikidata's 429 that is waited out (once per lookup).
+    # A longer one becomes our 503 with the same Retry-After.
+    wikidata_max_retry_after: float = Field(default=2.0, ge=0, allow_inf_nan=False)
 
     alias_index_path: FilePath = _DEFAULT_INDEX
+    # The RapidFuzz scorer for the local index. Changing it is a .env edit and a
+    # restart; re-check MATCH_THRESHOLD with scripts/evaluate.py when you do.
+    scorer: Literal["ratio", "WRatio", "token_set_ratio"] = "ratio"
     match_threshold: float = Field(default=0.9, ge=0, le=1)
     model_delay_seconds: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
@@ -92,6 +117,31 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         str_strip_whitespace=True,
     )
+
+    @model_validator(mode="after")
+    def _check_profile(self) -> Self:
+        """Refuse combinations that are wrong, failing at startup, not at use.
+
+        An empty ``API_KEY=`` means no key. In production a key of at least 16
+        characters and JSON logs are required. With GLEIF on, ``gleif_low_threshold``
+        must be below ``match_threshold``, or the tiebreak could never run.
+        """
+        if self.api_key == "":
+            self.api_key = None
+        if self.gleif_enabled and self.gleif_low_threshold >= self.match_threshold:
+            raise ValueError(
+                "gleif_low_threshold must be below match_threshold "
+                f"({self.gleif_low_threshold} >= {self.match_threshold})"
+            )
+        if self.environment == "production":
+            if self.api_key is None or len(self.api_key) < _MIN_KEY_LENGTH:
+                raise ValueError(
+                    "ENVIRONMENT=production needs API_KEY of at least "
+                    f"{_MIN_KEY_LENGTH} characters (openssl rand -hex 32)"
+                )
+            if self.log_format != "json":
+                raise ValueError("ENVIRONMENT=production needs LOG_FORMAT=json")
+        return self
 
 
 settings = Settings()
