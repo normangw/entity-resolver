@@ -23,8 +23,9 @@ slides and the final `v1.0.0` release.
 
 ## Done
 
-- **Workstream A (#98)**: commit `3ab9e3e` on branch `98-ci-release` (pushed; PR not
-  opened yet).
+- **Workstream A (#98)**: PR [#108](https://github.com/normangw/entity-resolver/pull/108)
+  squash-merged into `main` as `4cafcf0` on 2026-11-23 (reviewed by a teammate outside
+  GitHub; no review is recorded on the PR).
   - `ci.yml`: tests, a gitleaks scan of the whole history, and an image job that builds
     the image, waits for its HEALTHCHECK and `/ready`, and checks
     `eval/smoke-seed.jsonl` plus the version. PRs build only; `main` pushes
@@ -38,9 +39,32 @@ slides and the final `v1.0.0` release.
   - Locally: ruff, format, mypy, pytest (195 passed) all pass; smoke mode checked
     against a live local server.
 
+- **Workstream B (#99), code done, not yet run on Docker**: re-cut from `main` as
+  branch `99-index-deploy-main` (the commits of `99-index-deploy`, cherry-picked onto
+  `4cafcf0`; same tree). Its PR against `main` replaces the stacked
+  [#109](https://github.com/normangw/entity-resolver/pull/109), which should be closed.
+  - `compose.yml`: `alias-index` at `/data/index`, `ALIAS_INDEX_PATH` from `.env`
+    (no `.env`: the seed), `image: ghcr.io/normangw/entity-resolver:${VERSION:-main}`
+    plus `build:` for dev.
+  - `scripts/load_index.sh` (index file or backup archive into the volume, then
+    `docker compose restart api`), `scripts/deploy.sh <version> | --previous
+    [--dry-run]`, deploy log `~/entity-resolver-deploy.log` with result `ok`, `WARN`
+    or `failed-<step>`.
+  - Deploy check rule: any wrong answer fails; a 503 on a `"source": "local"` case
+    fails; a 503 on a Wikidata case is retried once after 10 s, then `WARN`.
+  - `eval/smoke.jsonl`: 17 cases, every answer checked against the full index and
+    live Wikidata on 2026-11-23 (上海航空 removed: in the seed but not the full
+    index, so it depended on live Wikidata). Failures name the case and its region. `tests/test_smoke_file.py` re-checks the local ones
+    offline when `data/companies.full.json` is present.
+  - Never run with Docker (no Docker on either machine so far): the docker steps of
+    both scripts are first exercised in the Jetstream drills (#106).
+  - Separate branch `99-commit-full-index` (b391d84) commits the full index to git;
+    not merged into `99-index-deploy`.
+
 ## Verification status
 
-- **Verified on GitHub** (CI run 45228277809 on `98-ci-release`, all jobs green): the
+- **Verified on GitHub** (CI run 45228277809 on `98-ci-release`, all jobs green, and
+  again on PR #108, run 45236823628, all jobs green): the
   image builds, passes its HEALTHCHECK and `/ready`, answers `eval/smoke-seed.jsonl`
   correctly and reports the `pyproject.toml` version; the gitleaks scan of the whole
   history found no secrets.
@@ -51,12 +75,25 @@ slides and the final `v1.0.0` release.
 
 ## Open decisions (Norman)
 
-1. Open the PR for `98-ci-release` (closes #98) and get a teammate's review.
-2. After the first push to `main`, make the GHCR package public (package settings →
-   Change visibility); otherwise the instance needs `docker login` with a read-only
-   token.
-3. Tag `v0.1.0` on commit `9031f63` (CHANGELOG.md says that tag exists, and it gives
-   `deploy.sh --previous` something to roll back to).
+0. Bugs found while writing `eval/smoke.jsonl` (outside B; not fixed, not in the
+   smoke set): `"N/A"` resolves through Wikidata to "Tomlinson Street electrical
+   substation", because `_GENERIC_NAMES` in `resolver.py` is built with `.split()`,
+   so `"n a"` is never a member. `"Georgetown University"` resolves to "Georgetown
+   University Press" via Wikidata. A comment for Ken on #104 was drafted, not posted
+   yet; post it.
+
+1. Make the GHCR package public (package settings → Change visibility), then test a
+   pull from a machine that is not logged in; otherwise the instance needs
+   `docker login` with a read-only token.
+2. `v0.1.0` on `9031f63` is history only: no image exists for it, so it is not a
+   rollback target (CHANGELOG.md says so). The rollback drill is `v0.2.0` → a later
+   version → `deploy.sh --previous`.
+3. Add a `.mailmap` (Phase 0, not done yet). Commits carry four identities for
+   Norman (`Norman` with the Georgetown address, `normangw` and `normanwgy` with a
+   private address, `normanwgy` with the noreply address) and two for Ken. Mapping
+   the private addresses means writing them into a public file, so decide first.
+   GitHub's contributor graph ignores `.mailmap`; it counts emails linked to accounts.
+4. Post dates for D (#102), F (#103) and H (#104) so they do not hold up Phase 2.
 
 ## Warning: macOS iCloud "Optimize Storage"
 
@@ -67,21 +104,16 @@ and iCloud (for example `~/code/entity-resolver`), or set the folder to "Keep
 Downloaded" in Finder. Note that `CLAUDE.md` and `data/companies.full.json` are
 git-ignored and are not in the repo; copy them over by hand.
 
+## Commit identity
+
+GitHub rejects pushes whose commits carry a private email. Use
+`git config user.email 201135778+normangw@users.noreply.github.com` in each new clone
+(set in the Windows clone; the Mac commits used gw341@georgetown.edu).
+
 ## Next step
 
-Start **Workstream B (#99)** on a fresh branch from `main` (or from `98-ci-release`
-until #98 merges):
-
-1. Move the alias index out of the image: mount `alias-index` at `/data/index` and
-   read `ALIAS_INDEX_PATH` from `.env` (dev default: the bundled seed).
-2. `scripts/load_index.sh` to copy an index or a backup archive into the volume.
-3. `scripts/deploy.sh <version>` and `deploy.sh --previous` (pull, record the digest,
-   `up -d`, wait healthy, run `eval/smoke.jsonl`, append to the deploy log).
-4. `compose.yml`: `image: ghcr.io/normangw/entity-resolver:${VERSION:-main}`, keep
-   `build:` for local dev.
-5. Write `eval/smoke.jsonl` (full index: Lyft, YouTube → Google, a typo, a non-English
-   alias, same-name cases, gibberish, a non-company). Check every expected answer
-   against the real full index before committing.
+Get B's replacement PR reviewed and merged, then start **Workstream C (#100)** on a
+branch from `main` (or from `99-index-deploy-main` until B merges).
 
 Setup on a new machine:
 

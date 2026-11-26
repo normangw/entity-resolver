@@ -1,0 +1,6 @@
+# One name and address per person for git shortlog, git log --use-mailmap and blame.
+# GitHub's contributor graph ignores this file; it counts the emails linked to each
+# account (Settings -> Emails). Add other members only with their agreement.
+Norman <201135778+normangw@users.noreply.github.com> <gw341@georgetown.edu>
+Norman <201135778+normangw@users.noreply.github.com> <normanwgy@gmail.com>
+Norman <201135778+normangw@users.noreply.github.com> <201135778+normangw@users.noreply.github.com>
