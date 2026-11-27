@@ -372,33 +372,34 @@ class WikidataClient:
     ) -> Match:
         """A match from one search hit, including its parent and headquarters.
 
-        ``canonical_name`` stays English. When ``language`` is not English the
-        display name goes in ``label``.
+        ``canonical_name`` stays English (the search runs with ``uselang=en``, so
+        the hit's label is English). When ``language`` is not English, the label in
+        that language is fetched and goes in ``label`` (#113).
         """
-        name = hit.get("label", hit["id"])
-        canonical = name
-        if language != "en":
-            # canonical_name stays English so one company is one name for joins;
-            # the translated name goes in ``label``.
-            canonical = self._labels([hit["id"]], "en").get(hit["id"], name)
+        canonical = hit.get("label", hit["id"])
         parent_ids = self._owner_ids(claims)
         hq_ids = _statement_ids(claims, _HQ_PROP)[:1]
-        labels = self._labels([*parent_ids, *hq_ids], language)
+        # One labels call covers the entity itself, its owners and its HQ.
+        labels = self._labels([hit["id"], *parent_ids, *hq_ids], language)
+        # ``_labels`` falls back to English, so an entity with no label in this
+        # language comes back equal to ``canonical`` and gets no ``label``.
+        translated = labels.pop(hit["id"], canonical)
+        own_names = {normalize(canonical), normalize(translated)}
         # The first owner with a label wins: P749 before P127, and an owner
         # that has no label in this language (or English) is skipped.
         parent_id = next((i for i in parent_ids if i in labels), None)
         for _ in range(_MAX_WRAPPER_HOPS):
-            if parent_id is None or normalize(labels[parent_id]) != normalize(name):
+            if parent_id is None or normalize(labels[parent_id]) not in own_names:
                 break
             parent_id = self._owner_of(parent_id, labels, language)
-        if parent_id is not None and normalize(labels[parent_id]) == normalize(name):
+        if parent_id is not None and normalize(labels[parent_id]) in own_names:
             parent_id = None  # only ever found the entity's own wrapper
         entity = Entity(
             wikidata_id=hit["id"],
             canonical_name=canonical,
             parent_company=labels[parent_id] if parent_id else None,
             headquarters=labels.get(hq_ids[0]) if hq_ids else None,
-            label=name if name != canonical else None,
+            label=translated if translated != canonical else None,
         )
         return Match(entity=entity, score=round(score, 3))
 
