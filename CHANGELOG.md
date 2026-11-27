@@ -17,6 +17,14 @@ third.
   serves the bundled 5-company seed. Servers that used the old method (index copied
   into `src/` before the build) must run `scripts/load_index.sh` once and set
   `ALIAS_INDEX_PATH=/data/index/companies.full.json` in `.env`.
+- Caddy replaces nginx as the reverse proxy. With `SITE_ADDRESS` set to the server's
+  DNS name the service is served over HTTPS (Let's Encrypt) and port 80 redirects to
+  it; only ports 80 and 443 are published. Open 443 in the firewall.
+- An uploaded file belongs to the browser that uploaded it: other browsers, and
+  requests without the `upload_owner` cookie, get `404` on its preview, status,
+  resolve and download. Scripts must keep the cookie (`curl -c jar -b jar`).
+- Responses carry `Cache-Control`: `no-cache` for the page, `no-store` for everything
+  else.
 
 ### Added
 - Every push and pull request builds the container image and smoke-tests it against a
@@ -29,6 +37,8 @@ third.
   `deploy.sh --previous` rolls back to the last good version.
 - `scripts/load_index.sh` loads an index file or a backup archive into the volume,
   after the same checks as a restore.
+- The API key can also be sent as `Authorization: Bearer <key>`, so Prometheus can
+  scrape `/metrics`.
 
 ## v0.1.0 (2026-11-12)
 

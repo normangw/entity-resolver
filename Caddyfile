@@ -1,0 +1,88 @@
+# Reverse proxy in front of the API (compose service "proxy"). It is the only
+# service with published ports (80 and 443); the api container is reachable only
+# through it, on the compose network.
+#
+# SITE_ADDRESS comes from .env (see .env.production.example). Set to the instance's
+# DNS name, Caddy gets a Let's Encrypt certificate for it, serves HTTPS on 443 and
+# redirects HTTP on 80 to HTTPS. Left at the default ":80", it serves plain HTTP,
+# which is what a local `docker compose up -d` wants.
+#
+# NOT YET RUN on a real host: check with `docker compose exec proxy caddy validate
+# --config /etc/caddy/Caddyfile` and `curl -vI https://<host>/health` (docs/drills.md).
+
+{
+	# HTTP/1.1 and HTTP/2 only. HTTP/3 needs UDP 443, which would be one more open
+	# port and one more security-group rule.
+	servers {
+		protocols h1 h2
+		timeouts {
+			# A client that is slow to send its headers is dropped.
+			read_header 15s
+			idle 2m
+		}
+	}
+	# Let's Encrypt by default. If issuance hits a rate limit, set ACME_CA in .env to
+	# https://acme-staging-v02.api.letsencrypt.org/directory to keep demoing.
+	acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+}
+
+(app) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	# Operators read /metrics on the compose network (Prometheus, or
+	# `docker compose exec api ...`), never from the internet.
+	@metrics path /metrics /metrics/*
+	respond @metrics 404
+
+	# Body caps. A little above UPLOAD_MAX_BYTES (10 MB), so the app's own 413
+	# message wins for a file just over the limit; JSON routes never need more
+	# than the app's MAX_BODY_BYTES (256 KB).
+	@upload path /upload
+	request_body @upload {
+		max_size 12MB
+	}
+	@json path /resolve /resolve/batch
+	request_body @json {
+		max_size 512KB
+	}
+
+	# Stock Caddy has no rate limiter; the app's per-client limits (RATE_LIMIT_*,
+	# 429 with Retry-After) do that job. Caddy replaces any X-Forwarded-For a client
+	# sends with the real address, which the limiter and the logs rely on.
+	reverse_proxy api:8000 {
+		transport http {
+			dial_timeout 5s
+			# Wikidata lookups and batch calls can take a while; the app keeps its
+			# own budgets (batch 60 s) below this.
+			response_header_timeout 120s
+			read_timeout 120s
+			write_timeout 120s
+		}
+	}
+
+	# Caddy's own 413 has no body the page can read, so answer in JSON like the app.
+	handle_errors 413 {
+		header Content-Type application/json
+		respond `{"detail":"This file is too big. The limit is 10 MB and 5,000 rows. Save it as CSV or split it."}` 413
+	}
+}
+
+{$SITE_ADDRESS::80} {
+	import app
+}
+
+# For checks run on the instance itself (scripts/deploy.sh, the healthcheck below,
+# scripts/monitor.py): http://127.0.0.1 reaches the app without depending on DNS
+# or a certificate. Only private and loopback sources are served; anyone else gets
+# a 403, so this is no plain-HTTP way in from the internet.
+http://127.0.0.1, http://localhost {
+	@outside not remote_ip private_ranges
+	respond @outside 403
+	import app
+}
