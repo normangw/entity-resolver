@@ -59,7 +59,7 @@ Docker volume, not in the image. Scoring takes about 1.3 ms, so the "model" runs
 library in the API process, called through `asyncio.to_thread` so that `/health` stays
 responsive. When a name is not in the index (brands and subsidiaries such as YouTube),
 the API asks the **Wikidata API**. Every call there has a time limit we chose: 5 s per
-call, a 15 s deadline per lookup, at most four lookups at once, retries with
+call in production, a 15 s deadline per lookup, at most four lookups at once, retries with
 exponential backoff and jitter for timeouts and 5xx, a single wait for a short
 `Retry-After` on a 429, and a circuit breaker that fails fast for 30 s after five
 failures. Spreadsheet uploads (.xlsx, .xls, .csv; 10 MB and 5,000 rows) run as
@@ -119,10 +119,11 @@ missed because it never tried the inputs real users type:
 - **Same-name companies (#33).** "Tesco PLC" and "Meta" returned a different company
   with the same name at 100%. Ties now go to the top-level company, then the lowest
   Wikidata number, and are flagged `needs_review`.
-- **Junk and placeholders (#75, #85).** An emoji resolved to Bitcoin, "T" to AT&T,
-  and "N/A" to an electrical substation, because symbol-only input normalized to an
-  empty string that matched everything. Junk, single letters and placeholders now stay
-  unresolved, and short names must match exactly.
+- **Junk and placeholders (#75, #85).** An emoji resolved to Bitcoin, "T" to AT&T and
+  "TBD" to a TV network, because symbol-only input normalized to an empty string that
+  matched everything and short names matched loosely. Our own re-check of these fixes
+  then found "N/A" resolving to an electrical substation. Junk, single letters and
+  placeholders now stay unresolved, and short names must match exactly.
 - **Non-companies (#78).** A university, the United Nations and a skyscraper resolved
   as companies through Wikidata. We skip non-company classes and no longer let a
   related entity (a university press) stand in for a skipped one.
