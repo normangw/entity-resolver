@@ -174,3 +174,36 @@
 {"query": "Acme Widget Corp of Atlantis", "expected": null, "category": "not_listed"}
 {"query": "blah blah", "expected": null, "category": "not_listed"}
 {"query": "Q", "expected": null, "category": "not_listed"}
+{"query": "TBD", "expected": null, "category": "junk"}
+{"query": "N/A", "expected": null, "category": "junk"}
+{"query": "n/a", "expected": null, "category": "junk"}
+{"query": "T", "expected": null, "category": "junk"}
+{"query": "-", "expected": null, "category": "junk"}
+{"query": "???", "expected": null, "category": "junk"}
+{"query": "🏢", "expected": null, "category": "junk"}
+{"query": "Unknown", "expected": null, "category": "junk"}
+{"query": "TBA", "expected": null, "category": "junk"}
+{"query": "null", "expected": null, "category": "junk"}
+{"query": "12345", "expected": null, "category": "junk"}
+{"query": "asdf qwer", "expected": null, "category": "junk"}
+{"query": "Tesco", "expected": "Q487494", "category": "same_name"}
+{"query": "Tesco PLC", "expected": "Q487494", "category": "same_name"}
+{"query": "Siemens AG", "expected": "Q81230", "category": "same_name"}
+{"query": "Siemens", "expected": "Q81230", "category": "same_name"}
+{"query": "Broadcom", "expected": "Q790060", "category": "same_name"}
+{"query": "Broadcom Inc.", "expected": "Q790060", "category": "same_name"}
+{"query": "Shell", "expected": "Q154950", "category": "same_name"}
+{"query": "Delta", "expected": "Q188920", "category": "same_name"}
+{"query": "HSBC Bank", "expected": "Q190464", "category": "same_name"}
+{"query": "Samsung", "expected": "Q20718", "category": "same_name"}
+{"query": "Sony", "expected": "Q41187", "category": "same_name"}
+{"query": "Georgetown University", "expected": null, "category": "non_company"}
+{"query": "United Nations", "expected": null, "category": "non_company"}
+{"query": "World Health Organization", "expected": null, "category": "non_company"}
+{"query": "Harvard University", "expected": null, "category": "non_company"}
+{"query": "European Union", "expected": null, "category": "non_company"}
+{"query": "Empire State Building", "expected": null, "category": "non_company"}
+{"query": "Red Cross", "expected": null, "category": "non_company"}
+{"query": "City of Chicago", "expected": null, "category": "non_company"}
+{"query": "NASA", "expected": null, "category": "non_company"}
+{"query": "World Bank", "expected": null, "category": "non_company"}

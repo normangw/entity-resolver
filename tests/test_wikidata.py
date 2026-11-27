@@ -427,26 +427,90 @@ def test_generic_word_never_reaches_wikidata():
     assert calls == []
 
 
+def test_placeholder_cells_never_reach_wikidata():
+    # Wikidata's search finds an electrical substation for "N/A" (#85).
+    calls: list[str] = []
+
+    class Spy:
+        def lookup(self, name: str, language: str = "en"):
+            calls.append(name)
+
+    with TestClient(app) as client:
+        wait_ready(client)
+        app.state.wikidata = Spy()
+        try:
+            bodies = [
+                client.post("/resolve", json={"company_name": junk}).json()
+                for junk in ["N/A", "n/a", "#N/A", "n.a.", "NaN", "Null", "T.B.D."]
+            ]
+        finally:
+            app.state.wikidata = None
+    assert {b["status"] for b in bodies} == {"unresolved"}
+    assert calls == []
+
+
 def test_translated_name_goes_in_label_and_canonical_stays_english():
+    """The label is fetched in the requested language (#113).
+
+    Search runs with ``uselang=en``, so live Wikidata returns the English label on
+    the hit and the Chinese text only as the matched alias. The fake does the same.
+    """
     claims = {"Q160120": {"P159": [statement("Q9")]}}
+    labels = {
+        "Q160120": {"en": "Huawei", "zh": "华为"},
+        "Q9": {"en": "Shenzhen", "zh": "深圳市"},
+    }
 
     def fetch(params: dict[str, str]) -> dict[str, Any]:
+        """Serve the search, claims and labels calls the way live Wikidata does."""
         if params["action"] == "wbsearchentities":
-            return {"search": [hit("Q160120", "华为")]}
+            found = {"type": "label", "language": "en", "text": "Huawei"}
+            if params["search"] == "华为":
+                found = {"type": "alias", "language": "zh", "text": "华为"}
+            return {"search": [{"id": "Q160120", "label": "Huawei", "match": found}]}
+        ids = params["ids"].split("|")
         if params["props"].startswith("claims"):
-            return {"entities": {"Q160120": {"claims": claims["Q160120"]}}}
+            return {"entities": {i: {"claims": claims.get(i, {})} for i in ids}}
+        wanted = params["languages"].split("|")
         return {
             "entities": {
-                "Q160120": {
-                    "labels": {"en": {"value": "Huawei"}, "zh": {"value": "华为"}}
+                i: {
+                    "labels": {
+                        lang: {"value": value}
+                        for lang, value in labels.get(i, {}).items()
+                        if lang in wanted
+                    }
                 }
+                for i in ids
             }
         }
 
-    match = WikidataClient(threshold=0.9, fetch=fetch).lookup("华为", "zh")
-    assert match is not None
-    assert match.entity.canonical_name == "Huawei"
-    assert match.entity.label == "华为"
+    for query in ("华为", "Huawei"):
+        match = WikidataClient(threshold=0.9, fetch=fetch).lookup(query, "zh")
+        assert match is not None
+        assert match.entity.canonical_name == "Huawei"
+        assert match.entity.label == "华为"
+        assert match.entity.headquarters == "深圳市"
+
+
+def test_label_is_empty_in_english_and_when_no_translation_exists():
+    """``label`` is None for English, and for a language Wikidata has no label in."""
+    claims = {"Q1": {"P452": [statement("Q2")]}}
+
+    def fetch(params: dict[str, str]) -> dict[str, Any]:
+        """Serve one company that has only an English label."""
+        if params["action"] == "wbsearchentities":
+            return {"search": [hit("Q1", "Acme")]}
+        ids = params["ids"].split("|")
+        if params["props"].startswith("claims"):
+            return {"entities": {i: {"claims": claims.get(i, {})} for i in ids}}
+        return {"entities": {i: {"labels": {"en": {"value": "Acme"}}} for i in ids}}
+
+    for language in ("en", "ja"):
+        match = WikidataClient(fetch=fetch).lookup("Acme", language)
+        assert match is not None
+        assert match.entity.canonical_name == "Acme"
+        assert match.entity.label is None
 
 
 def test_search_is_always_english_and_reads_more_hits():
@@ -470,3 +534,53 @@ def test_buildings_and_universities_are_not_companies():
         {"Q1": "Empire State Realty Trust"},
     )
     assert WikidataClient(fetch=fetch).lookup("Empire State Building") is None
+
+
+def test_a_non_company_name_does_not_fall_through_to_a_related_hit():
+    # "georgetown university" found Georgetown University Press and "united
+    # nations" found the Security Council once the exact hits were skipped (#78).
+    fetch = fake_wikidata(
+        [
+            hit("Q333886", "Georgetown University"),
+            hit("Q5547060", "Georgetown University Press"),
+        ],
+        {
+            "Q333886": {"P159": [statement("Q61")], "P31": [statement("Q3918")]},
+            "Q5547060": {"P749": [statement("Q333886")]},
+        },
+        {"Q333886": "Georgetown University", "Q61": "Washington, D.C."},
+    )
+    assert WikidataClient(fetch=fetch).lookup("georgetown university") is None
+
+
+def test_a_company_that_matches_best_still_wins_over_a_skipped_hit():
+    fetch = fake_wikidata(
+        [
+            hit("Q5547060", "Georgetown University Press"),
+            hit("Q333886", "Georgetown University"),
+        ],
+        {
+            "Q333886": {"P159": [statement("Q61")], "P31": [statement("Q3918")]},
+            "Q5547060": {"P749": [statement("Q333886")]},
+        },
+        {"Q333886": "Georgetown University", "Q61": "Washington, D.C."},
+    )
+    match = WikidataClient(fetch=fetch).lookup("Georgetown University Press")
+    assert match is not None
+    assert match.entity.wikidata_id == "Q5547060"
+
+
+def test_eval_non_companies_are_skipped_by_class():
+    # Classes of the non_company eval queries that still resolved (#112, #78).
+    for qid, name, cls in [
+        ("Q458", "European Union", "Q1335818"),
+        ("Q7164", "World Bank", "Q1345691"),
+        ("Q3112539", "City of Chicago", "Q97234439"),
+        ("Q470110", "American Red Cross", "Q1968122"),
+    ]:
+        fetch = fake_wikidata(
+            [hit(qid, name)],
+            {qid: {"P159": [statement("Q1")], "P31": [statement(cls)]}},
+            {"Q1": "Somewhere"},
+        )
+        assert WikidataClient(fetch=fetch).lookup(name) is None, name

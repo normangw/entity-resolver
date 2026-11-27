@@ -4,7 +4,7 @@ Probes ``/health``, ``/ready`` and a few known names through ``POST /resolve``, 
 them, and exits non-zero (printing what failed) so cron, a CI schedule or a person
 notices before users do. Standard library only, so it runs anywhere.
 
-    python scripts/monitor.py http://149.165.159.230
+    python scripts/monitor.py https://team-4-final.cis240466.projects.jetstream-cloud.org
     python scripts/monitor.py http://host --samples 20 --p95-ms 1500 --webhook-env HOOK
     python scripts/monitor.py http://host --smoke eval/smoke.jsonl --expect-version 1.0
 
@@ -234,7 +234,7 @@ def notify(webhook: str, text: str) -> None:
 def main() -> int:
     """Parse arguments, run the checks, print the result; 1 means something failed."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("url", help="base URL, e.g. http://149.165.159.230")
+    parser.add_argument("url", help="base URL of the deployment, e.g. https://<host>")
     parser.add_argument("--samples", type=int, default=6)
     parser.add_argument("--p50-ms", type=float, default=1000)
     parser.add_argument("--p95-ms", type=float, default=3000)
