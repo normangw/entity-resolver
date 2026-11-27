@@ -492,3 +492,53 @@ def test_buildings_and_universities_are_not_companies():
         {"Q1": "Empire State Realty Trust"},
     )
     assert WikidataClient(fetch=fetch).lookup("Empire State Building") is None
+
+
+def test_a_non_company_name_does_not_fall_through_to_a_related_hit():
+    # "georgetown university" found Georgetown University Press and "united
+    # nations" found the Security Council once the exact hits were skipped (#78).
+    fetch = fake_wikidata(
+        [
+            hit("Q333886", "Georgetown University"),
+            hit("Q5547060", "Georgetown University Press"),
+        ],
+        {
+            "Q333886": {"P159": [statement("Q61")], "P31": [statement("Q3918")]},
+            "Q5547060": {"P749": [statement("Q333886")]},
+        },
+        {"Q333886": "Georgetown University", "Q61": "Washington, D.C."},
+    )
+    assert WikidataClient(fetch=fetch).lookup("georgetown university") is None
+
+
+def test_a_company_that_matches_best_still_wins_over_a_skipped_hit():
+    fetch = fake_wikidata(
+        [
+            hit("Q5547060", "Georgetown University Press"),
+            hit("Q333886", "Georgetown University"),
+        ],
+        {
+            "Q333886": {"P159": [statement("Q61")], "P31": [statement("Q3918")]},
+            "Q5547060": {"P749": [statement("Q333886")]},
+        },
+        {"Q333886": "Georgetown University", "Q61": "Washington, D.C."},
+    )
+    match = WikidataClient(fetch=fetch).lookup("Georgetown University Press")
+    assert match is not None
+    assert match.entity.wikidata_id == "Q5547060"
+
+
+def test_eval_non_companies_are_skipped_by_class():
+    # Classes of the non_company eval queries that still resolved (#112, #78).
+    for qid, name, cls in [
+        ("Q458", "European Union", "Q1335818"),
+        ("Q7164", "World Bank", "Q1345691"),
+        ("Q3112539", "City of Chicago", "Q97234439"),
+        ("Q470110", "American Red Cross", "Q1968122"),
+    ]:
+        fetch = fake_wikidata(
+            [hit(qid, name)],
+            {qid: {"P159": [statement("Q1")], "P31": [statement(cls)]}},
+            {"Q1": "Somewhere"},
+        )
+        assert WikidataClient(fetch=fetch).lookup(name) is None, name
