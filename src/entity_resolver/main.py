@@ -43,6 +43,7 @@ from entity_resolver.observability import (
     RequestMiddleware,
     configure_logging,
     metrics,
+    resolution_context_var,
 )
 from entity_resolver.protection import (
     BodyLimitMiddleware,
@@ -226,6 +227,14 @@ async def resolve_name(
         raise
     metrics.inc(
         "resolutions_total", source=result.source or "none", status=result.status
+    )
+    source = result.source or "none"
+    scorer = {"local": "ratio", "wikidata": "WRatio", "gleif": "WRatio"}.get(
+        source, "none"
+    )
+    resolution_context_var.set((source, scorer))
+    logging.getLogger("entity_resolver.resolution").info(
+        "resolution", extra={"source": source, "scorer": scorer}
     )
     return result
 

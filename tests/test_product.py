@@ -24,7 +24,7 @@ from entity_resolver import uploads
 from entity_resolver.config import settings
 from entity_resolver.main import app
 from entity_resolver.models import ResolveResponse
-from entity_resolver.observability import JsonFormatter, Metrics, metrics
+from entity_resolver.observability import Metrics, metrics
 from entity_resolver.protection import RateLimiter
 from entity_resolver.wikidata import CircuitBreaker, WikidataClient, WikidataUnavailable
 
@@ -418,36 +418,122 @@ def test_metrics_count_resolutions_and_requests(api):
     assert "http_request_duration_seconds_count" in text
 
 
-def test_logs_never_contain_names_or_cells(api, caplog):
-    caplog.set_level(logging.DEBUG)
-    api.post("/resolve", json={"company_name": "Secretive Holdings Zyxwv"})
-    rows = [["Company"], ["Hushhush Industries Qwerty"]]
-    job = upload(api, csv_bytes(rows), "hush.csv").json()["id"]
-    run_job(api, job)
-    text = " ".join(
-        f"{r.getMessage()} {r.__dict__.get('path', '')}" for r in caplog.records
+def test_logs_never_contain_names_or_cells(api, capsys):
+    capsys.readouterr()
+
+    api.post(
+        "/resolve",
+        json={"company_name": "Secretive Holdings Zyxwv"},
     )
-    assert "Secretive" not in text and "Hushhush" not in text
+
+    rows = [["Company"], ["Hushhush Industries Qwerty"]]
+    uploaded = upload(api, csv_bytes(rows), "hush.csv")
+    assert uploaded.status_code < 300
+
+    job = uploaded.json()["id"]
+    run_job(api, job)
+
+    text = capsys.readouterr().err
+
+    assert '"request_id"' in text
+    assert "Secretive" not in text
+    assert "Hushhush" not in text
     assert "hush.csv" not in text
 
+    metrics_text = api.get("/metrics").text
 
-def test_json_formatter_emits_one_valid_object_per_line():
-    record = logging.LogRecord("x", logging.INFO, __file__, 1, "hello %s", ("w",), None)
-    record.status = 200
-    line = JsonFormatter().format(record)
-    data = json.loads(line)
-    assert data["msg"] == "hello w" and data["status"] == 200 and "\n" not in line
+    assert "Secretive" not in metrics_text
+    assert "Hushhush" not in metrics_text
+    assert "hush.csv" not in metrics_text
+
+
+def test_json_formatter_emits_one_valid_object_per_line(api, capsys):
+    capsys.readouterr()
+
+    response = api.get("/health")
+    lines = capsys.readouterr().err.splitlines()
+    records = [json.loads(line) for line in lines if line.startswith("{")]
+
+    access_logs = [record for record in records if record.get("msg") == "request"]
+
+    assert access_logs
+    entry = access_logs[-1]
+
+    assert entry["status"] == 200
+    assert entry["path"] == "/health"
+    assert entry["method"] == "GET"
+    assert entry["request_id"] == response.headers["x-request-id"]
+    assert entry["duration_ms"] >= 0
+
+
+def test_application_errors_keep_message_and_traceback(api, capsys):
+    capsys.readouterr()
+
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError:
+        logging.getLogger("entity_resolver.uploads").exception("Job %s crashed", "j1")
+
+    lines = capsys.readouterr().err.splitlines()
+    records = [json.loads(line) for line in lines if line.startswith("{")]
+    entry = next(r for r in records if r.get("msg") == "Job j1 crashed")
+
+    assert entry["level"] == "ERROR"
+    assert "RuntimeError: boom" in entry["exc"]
 
 
 def test_metrics_render_is_prometheus_text():
     m = Metrics()
-    m.inc("things_total", kind="a")
-    m.inc("things_total", kind="a")
-    m.observe(0.02)
+
+    m.inc("resolutions_total", source="local", status="resolved")
+    m.inc("resolutions_total", source="local", status="resolved")
+
+    m.observe(0.02, method="POST", path="/resolve")
+
     out = m.render()
-    assert 'things_total{kind="a"} 2' in out
-    assert 'http_request_duration_seconds_bucket{le="0.025"} 1' in out
-    assert 'http_request_duration_seconds_bucket{le="+Inf"} 1' in out
+
+    assert m.value("resolutions_total", source="local", status="resolved") == 2
+
+    assert 'resolutions_total{source="local",status="resolved"} 2.0' in out
+
+    assert (
+        "http_request_duration_seconds_bucket"
+        '{le="0.025",method="POST",path="/resolve"} 1.0' in out
+    )
+
+    assert (
+        "http_request_duration_seconds_bucket"
+        '{le="+Inf",method="POST",path="/resolve"} 1.0' in out
+    )
+
+    assert "# TYPE resolutions_total counter" in out
+    assert "# TYPE http_request_duration_seconds histogram" in out
+
+
+def test_metrics_count_http_errors_by_route(api):
+    before = metrics.value(
+        "http_errors_total",
+        method="POST",
+        path="/resolve",
+        status="422",
+    )
+
+    response = api.post(
+        "/resolve",
+        json={"company_name": ""},
+    )
+
+    assert response.status_code == 422
+
+    assert (
+        metrics.value(
+            "http_errors_total",
+            method="POST",
+            path="/resolve",
+            status="422",
+        )
+        == before + 1
+    )
 
 
 @pytest.mark.skipif(
@@ -488,3 +574,41 @@ def test_batch_stops_calling_wikidata_when_its_time_budget_is_spent(api, monkeyp
     # are not sent on; "Apple Inc." is, because the local index knows it.
     assert asked == ["Aaa Co", "Apple Inc."]
     assert [x["status"] for x in results] == ["resolved", "retry", "retry", "resolved"]
+
+
+def test_resolution_logs_safe_source_and_scorer(api, capsys, monkeypatch):
+    """The result metadata is logged without exposing any answer fields."""
+
+    async def fake(state, name, region, language="en"):
+        return resolved(name).model_copy(
+            update={
+                "canonical_name": "PrivateAnswerMarker",
+                "parent_company": "PrivateParentMarker",
+                "headquarters": "PrivateHQMarker",
+            }
+        )
+
+    monkeypatch.setattr("entity_resolver.main._resolve_name", fake)
+    capsys.readouterr()
+    response = api.post("/resolve", json={"company_name": "PrivateInputMarker"})
+    assert response.status_code == 200
+    assert response.json()["canonical_name"] == "PrivateAnswerMarker"
+    text = capsys.readouterr().err
+    entries = [json.loads(line) for line in text.splitlines() if line.startswith("{")]
+    events = [
+        entry for entry in entries if entry.get("msg") in {"request", "resolution"}
+    ]
+    assert {entry["msg"] for entry in events} == {"request", "resolution"}
+    for entry in events:
+        assert entry["request_id"] == response.headers["x-request-id"]
+        assert entry["source"] == "local"
+        assert entry["scorer"] == "ratio"
+    exported = api.get("/metrics").text
+    for marker in (
+        "PrivateInputMarker",
+        "PrivateAnswerMarker",
+        "PrivateParentMarker",
+        "PrivateHQMarker",
+    ):
+        assert marker not in text
+        assert marker not in exported
