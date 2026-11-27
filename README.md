@@ -1,8 +1,51 @@
 # Entity Resolver
 
-A multilingual company entity resolution API. Given a messy or variant company name (e.g. "Wal-Mart Stores Inc." or "Shanghai Airlines"), the API returns the canonical company name, parent company, and headquarters address.
+**Team (Group 4):** Yuhua Pang, Ken Qin, Norman Wang, Hongjin Zeng. DSAN 6700 (ML Deployment), Georgetown University.
 
-Built for DSAN 6700 — ML Deployment, Georgetown University.
+**Aim.** Analysts who join vendor, contract or news data keep hitting the same company written ten ways: `Wal-Mart Stores Inc.`, `Walmart`, `沃尔玛`. This service takes one messy name, or a spreadsheet column of them, and returns one stable answer per company: the canonical name, the Wikidata id to join on, the parent company and the headquarters. It matches against a local alias index of about 14,000 listed companies in several languages, asks Wikidata for brands and subsidiaries the index does not know, and says when it is unsure (`needs_review`) or cannot answer right now (`503`, `retry`) instead of guessing.
+
+**Demo in three steps** (replace `$HOST` with the instance's DNS name; see [Deploy on Jetstream2](#deploy-on-jetstream2)):
+
+1. Open `https://$HOST/` and type `Wal-Mart Stores Inc.`, then `上海航空` with language `zh`, then `YouTube` (resolved through Wikidata, parent Google).
+2. From a terminal:
+   ```bash
+   curl -s -X POST https://$HOST/resolve -H 'Content-Type: application/json' \
+     -d '{"company_name": "Wal-Mart Stores Inc."}'
+   ```
+3. On the page, upload a spreadsheet with a column of company names, pick the column, watch the progress bar, and download the result with the answers appended.
+
+<!-- TODO(#106): paste real output of step 2 from the Jetstream instance -->
+
+**Documentation.** [Runbook](docs/runbook.md) (install, deploy, roll back, back up, restore, reboot) · [Architecture](docs/architecture.md) · [Time limits](docs/time-limits.md) · [Scaling](docs/scaling.md) · [Security](docs/security.md) · [Drills](docs/drills.md) · [SLO](docs/slo.md) (planned in #102) · [Evaluation](eval/README.md) · [Changelog](CHANGELOG.md)
+
+**Data.** The full alias index (`data/companies.full.json`, about 14,000 companies listed on a stock exchange, with multilingual aliases and LEIs) is built from Wikidata by `uv run python scripts/build_index.py --out data/companies.full.json`. A rebuild takes about 20 minutes. <!-- TODO(#106): replace with the measured time of a full build_index.py run --> It is git-ignored and never baked into the image: on the server it lives in the `alias-index` Docker volume (see [Load the full index](#load-the-full-index)), with verified backups kept off the instance (see [Backup and restore](#backup-and-restore)). Without it the app serves a bundled 5-company seed, which is what tests and CI use.
+
+### Every endpoint, copy and paste
+
+Set `HOST` first (`export HOST=localhost` for a local `docker compose up -d`, which serves plain HTTP, so use `http://` there). `API_KEY` is only needed where noted, and only when the server sets one.
+
+```bash
+curl -s https://$HOST/health                                    # liveness and version
+curl -si https://$HOST/ready                                    # 200 once the index is loaded, else 503
+curl -s -X POST https://$HOST/resolve -H 'Content-Type: application/json' \
+  -d '{"company_name": "上海航空", "language": "zh", "region": "world"}'
+curl -s -X POST https://$HOST/resolve/batch -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{"company_names": ["Wal-Mart Stores Inc.", "YouTube", "Zyxwv Quantum Bakery"]}'
+# Spreadsheet: the cookie jar keeps the upload_owner cookie that ties the job to you.
+curl -s -c jar.txt -F file=@companies.csv https://$HOST/upload  # note the "id"
+ID=<id from the line above>
+curl -s -b jar.txt "https://$HOST/upload/$ID/preview?has_header=true"
+curl -s -b jar.txt -X POST https://$HOST/upload/$ID/resolve -H 'Content-Type: application/json' \
+  -d '{"column": 0, "has_header": true, "region": "world"}'
+curl -s -b jar.txt https://$HOST/upload/$ID/status             # repeat until "state": "done"
+curl -s -b jar.txt -OJ https://$HOST/upload/$ID/download       # saves <name>_resolved.csv
+curl -s -o /dev/null -w '%{http_code}\n' https://$HOST/metrics  # 404 from outside, by design
+# /metrics from the instance itself, with the key:
+docker compose exec api python -c "import urllib.request as u; r=u.Request('http://127.0.0.1:8000/metrics', headers={'Authorization': 'Bearer $API_KEY'}); print(u.urlopen(r).read().decode()[:500])"
+```
+
+`https://$HOST/docs` is the interactive schema; `GET /` is the web page.
 
 ## Requirements
 
@@ -386,7 +429,7 @@ Answers to questions raised during user testing (issues #42 to #92). [docs/teste
 - **Brands and d/b/a names.** With the Wikidata fallback on by default, a brand resolves to its own entity and `parent_company` is its owner when Wikidata records one (`YouTube` to `Google`). A brand with no owner on record (`Sam's Club`, `Instagram` in some cases) has `parent_company: null`. In `X d/b/a Y` the legal entity X is tried first, then the brand Y.
 - **Which alias matched.** `matched_alias` returns the stored alias. It does not yet say whether it was a ticker, an old name or a translation.
 - **As-of date.** `as_of` is the index build date for local matches and the lookup date for Wikidata, whose parent and headquarters values can be out of date (`WarnerMedia`'s parent, `Dow`'s parent). Wikidata answers are cached for `WIKIDATA_CACHE_TTL` seconds.
-- **Using the API directly.** It is meant to be used, one name per `POST /resolve`, or up to 100 names per `POST /resolve/batch` (which requires the API key when `API_KEY` is set). For files use the spreadsheet upload. Each client is rate-limited (`429` with `Retry-After`), and the demo shares one Wikidata and GLEIF budget, so a script should back off on `429` and `503` (Wikidata throttling gives `503`, not a wrong answer).
+- **Using the API directly.** Scripts are welcome within limits. `POST /resolve` takes one name; `POST /resolve/batch` takes up to 100 and needs the API key when `API_KEY` is set; for a file, use the spreadsheet upload (keep the `upload_owner` cookie). Every client address is rate-limited (`RATE_LIMIT_*`, answered with `429` and `Retry-After`). All callers share one Wikidata and GLEIF budget, and Wikidata throttles: you then get `503` with `Retry-After`, or `retry` rows in a batch, never a wrong answer. Wait the `Retry-After` and send those names again.
 - **Headquarters format.** `headquarters` is whatever Wikidata or the index stores, so it can be a city, district or building and may not match `country` (`Philip Morris`, `Tencent`, `HSBC`). It is not cleaned up. Treat it as a hint and `country` (local matches only) as the more reliable field.
 
 - **Join key.** Join on `wikidata_id`. It is stable across runs and languages. `canonical_name` is always the English name but can change if Wikidata or the index is rebuilt. The index does not carry a version yet, so keep the file you resolved alongside its results. The stored `identifier` is the company's LEI (used only for the GLEIF tiebreak) and is not returned.
@@ -453,6 +496,8 @@ In another:
 ```bash
 uv run python scripts/bench.py http://127.0.0.1:8000 10
 ```
+
+**Re-audit (Deliverable 3, #105).** Every `async def` in `src/` was read again for blocking calls. Scoring, Wikidata and GLEIF lookups, spreadsheet parsing, writing and verifying results already ran in worker threads (`asyncio.to_thread`). Three disk writes still ran on the event loop and now run in a thread too: each 1 MB chunk of an upload, the job state saved when a run starts, and the job state (with `cache.json`, which can hold thousands of answers) saved when a run ends. Left on the loop on purpose: creating a job directory, the expiry sweep and deleting an expired job (small and rare; moving them would mean the job table is changed from two threads), and saving jobs at shutdown (nothing else is served then).
 
 Stop the server, then repeat on this branch (`git checkout 5-fix-blocking-call`). `MODEL_DELAY_SECONDS` must be set before the process starts. The bench script sends ten `POST /resolve` calls at once with `httpx.AsyncClient` and `asyncio.gather` and prints the wall-clock time and the slowest request.
 
