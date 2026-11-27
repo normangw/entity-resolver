@@ -63,6 +63,13 @@ _NOTES = {
         "Discovery. Time Warner Cable is a separate company, now part of Charter."
     ),
 }
+# Aliases Wikidata attaches to the wrong company, by Wikidata id and normalized
+# alias. They are dropped when any index loads, so a rebuilt index stays fixed too.
+# Time Warner Cable carries "Time Warner" and "Time-Warner", which belong to the
+# media company Time Warner Inc. (later WarnerMedia); see #84.
+_WRONG_ALIASES: dict[str, frozenset[str]] = {
+    "Q1885099": frozenset({"time warner"}),
+}
 # Noise found in real vendor columns: notes in brackets, vendor numbers, a city.
 _NOISE_PARENS = re.compile(r"\([^)]*\)|\[[^\]]*\]")
 _NOISE_ID = re.compile(
@@ -232,6 +239,8 @@ class Resolver:
             for alias in rec["aliases"]:
                 normalized = normalize(alias)
                 if not normalized:  # a symbol-only alias would match any symbol
+                    continue
+                if normalized in _WRONG_ALIASES.get(entity.wikidata_id, ()):
                     continue
                 self._choices.append(normalized)
                 self._aliases.append(alias)
