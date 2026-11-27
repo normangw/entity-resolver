@@ -277,3 +277,25 @@ def test_split_companies_carry_a_review_note():
 
     assert "GE Vernova" in (note_for("General Electric") or "")
     assert note_for("Apple") is None
+
+
+def test_time_warner_no_longer_resolves_to_time_warner_cable(tmp_path):
+    # Wikidata lists "Time Warner" as an alias of Time Warner Cable (#84).
+    resolver = Resolver(
+        make_index(
+            tmp_path,
+            [
+                rec(
+                    "Q1885099",
+                    "Time Warner Cable",
+                    ["Time Warner Cable", "TWC", "Time Warner", "Time-Warner"],
+                    parent="Charter Communications",
+                )
+            ],
+        )
+    )
+    for name in ["Time Warner", "Time-Warner", "Time Warner Inc."]:
+        assert resolver.resolve(name) is None, name
+    match = resolver.resolve("Time Warner Cable")
+    assert match is not None
+    assert match.entity.wikidata_id == "Q1885099"
