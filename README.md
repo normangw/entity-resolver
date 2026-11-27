@@ -4,6 +4,8 @@
 
 **Aim.** Analysts who join vendor, contract or news data keep hitting the same company written ten ways: `Wal-Mart Stores Inc.`, `Walmart`, `沃尔玛`. This service takes one messy name, or a spreadsheet column of them, and returns one stable answer per company: the canonical name, the Wikidata id to join on, the parent company and the headquarters. It matches against a local alias index of about 14,000 listed companies in several languages, asks Wikidata for brands and subsidiaries the index does not know, and says when it is unsure (`needs_review`) or cannot answer right now (`503`, `retry`) instead of guessing.
 
+**Live:** <https://team-4-final.cis240466.projects.jetstream-cloud.org/> (release v0.2.0).
+
 **Demo in three steps** (replace `$HOST` with the instance's DNS name; see [Deploy on Jetstream2](#deploy-on-jetstream2)):
 
 1. Open `https://$HOST/` and type `Wal-Mart Stores Inc.`, then `上海航空` with language `zh`, then `YouTube` (resolved through Wikidata, parent Google).
@@ -12,11 +14,13 @@
    curl -s -X POST https://$HOST/resolve -H 'Content-Type: application/json' \
      -d '{"company_name": "Wal-Mart Stores Inc."}'
    ```
+   Answer from the live instance (2026-11-27):
+   ```json
+   {"input":"Wal-Mart Stores Inc.","status":"resolved","wikidata_id":"Q483551","canonical_name":"Walmart","label":null,"parent_company":null,"headquarters":"Bentonville, United States","country":"US","source":"local","confidence":1.0,"needs_review":false,"matched_alias":"Wal-Mart Stores","as_of":"2026-11-27","note":null}
+   ```
 3. On the page, upload a spreadsheet with a column of company names, pick the column, watch the progress bar, and download the result with the answers appended.
 
-<!-- TODO(#106): paste real output of step 2 from the Jetstream instance -->
-
-**Documentation.** [Runbook](docs/runbook.md) (install, deploy, roll back, back up, restore, reboot) · [Architecture](docs/architecture.md) · [Time limits](docs/time-limits.md) · [Scaling](docs/scaling.md) · [Security](docs/security.md) · [Drills](docs/drills.md) · [SLO](docs/slo.md) (planned in #102) · [Evaluation](eval/README.md) · [Changelog](CHANGELOG.md)
+**Documentation.** [Discussion (PDF)](discussion.pdf) · [Runbook](docs/runbook.md) (install, deploy, roll back, back up, restore, reboot) · [Architecture](docs/architecture.md) · [Time limits](docs/time-limits.md) · [Scaling](docs/scaling.md) · [Security](docs/security.md) · [Drills](docs/drills.md) · [SLO](docs/slo.md) · [Evaluation](eval/README.md) · [Changelog](CHANGELOG.md)
 
 **Data.** The full alias index (`data/companies.full.json`, about 14,000 companies listed on a stock exchange, with multilingual aliases and LEIs) is built from Wikidata by `uv run python scripts/build_index.py --out data/companies.full.json`. A rebuild takes about 20 minutes. <!-- TODO(#106): replace with the measured time of a full build_index.py run --> It is git-ignored and never baked into the image: on the server it lives in the `alias-index` Docker volume (see [Load the full index](#load-the-full-index)), with verified backups kept off the instance (see [Backup and restore](#backup-and-restore)). Without it the app serves a bundled 5-company seed, which is what tests and CI use.
 

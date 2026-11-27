@@ -29,6 +29,7 @@ scripts/
 .readthedocs.yml
 CHANGELOG.md
 discussion.md
+discussion.pdf
 Dockerfile
 compose.yml
 .DS_Store
