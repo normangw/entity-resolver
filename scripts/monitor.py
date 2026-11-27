@@ -26,6 +26,13 @@ Each case runs once. CI runs ``eval/smoke-seed.jsonl`` against the image it buil
 worse are caught even when every status code is 200. ``--expect-version`` also checks
 the version /health reports.
 
+In smoke mode a wrong answer always fails. A 503 depends on the case: a case that
+expects ``"source": "local"`` is answered from the alias index and must never be busy,
+so a 503 there fails. Any other case may need Wikidata, whose throttling is answered
+with a designed 503, so those are tried once more after ``--busy-retry-seconds`` (10)
+and, if still busy, reported as a warning. ``--warn-exit-code`` lets a caller tell
+"passed with warnings" from "passed" (deploy.sh logs it as WARN).
+
 The Jetstream address changes whenever the instance is unshelved, so pass the current
 one each time (or set the APP_URL variable the scheduled workflow reads).
 """
@@ -77,6 +84,17 @@ def mismatches(case: dict[str, Any], answer: dict[str, Any]) -> list[str]:
     ]
 
 
+def label(case: dict[str, Any]) -> str:
+    """How a case is named in output: the name, plus region/language when given."""
+    extra = [f"{k}={case[k]}" for k in REQUEST_KEYS[1:] if k in case]
+    return repr(case["company_name"]) + (f" ({', '.join(extra)})" if extra else "")
+
+
+def is_local(case: dict[str, Any]) -> bool:
+    """Whether a smoke case is answered from the alias index (so never busy)."""
+    return case.get("source") == "local"
+
+
 def call(
     base: str, path: str, body: dict[str, Any] | None = None, timeout: float = 15
 ) -> tuple[int, Any, float]:
@@ -113,11 +131,12 @@ def check(
     p95_ms: float,
     cases: list[dict[str, Any]] | None = None,
     expect_version: str | None = None,
+    busy_retry_seconds: float = 10,
 ) -> tuple[list[str], list[str], list[str]]:
     """Run every check; returns (failures, warnings, info lines).
 
     Without ``cases`` the canaries are cycled ``samples`` times; with ``cases`` each
-    one runs once.
+    one runs once, and busy (503) cases are retried once (see the module docstring).
     """
     failures: list[str] = []
     warnings: list[str] = []
@@ -144,28 +163,43 @@ def check(
     else:
         run = cases
     times: list[float] = []
-    busy = 0
-    for case in run:
-        name = case["company_name"]
-        request = {k: case[k] for k in REQUEST_KEYS if k in case}
-        try:
-            status, body, elapsed = call(base, "/resolve", request)
-        except OSError as exc:
-            failures.append(f"/resolve failed: {exc}")
-            break
-        if status == 503:
-            busy += 1
-            continue
-        if status != 200 or not isinstance(body, dict):
-            failures.append(f"{name!r}: HTTP {status}")
-            continue
-        wrong = mismatches(case, body)
-        if wrong:
-            failures.append(f"{name!r}: {'; '.join(wrong)}")
-            continue
-        times.append(elapsed)
-    if busy:
-        warnings.append(f"{busy} of {len(run)} lookups got 503 (Wikidata busy?)")
+
+    def resolve_all(batch: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        """Check each case; return the busy ones, or None if the service is gone."""
+        busy_cases = []
+        for case in batch:
+            name = label(case)
+            request = {k: case[k] for k in REQUEST_KEYS if k in case}
+            try:
+                status, body, elapsed = call(base, "/resolve", request)
+            except OSError as exc:
+                failures.append(f"/resolve failed: {exc}")
+                return None
+            if status == 503:
+                busy_cases.append(case)
+            elif status != 200 or not isinstance(body, dict):
+                failures.append(f"{name}: HTTP {status}")
+            elif wrong := mismatches(case, body):
+                failures.append(f"{name}: {'; '.join(wrong)}")
+            else:
+                times.append(elapsed)
+        return busy_cases
+
+    busy = resolve_all(run)
+    if busy and cases is not None:
+        time.sleep(busy_retry_seconds)
+        busy = resolve_all(busy)
+    if cases is None:
+        if busy:
+            warnings.append(
+                f"{len(busy)} of {len(run)} lookups got 503 (Wikidata busy?)"
+            )
+    else:
+        for case in busy or []:
+            if is_local(case):
+                failures.append(f"{label(case)}: 503 on a local-index answer")
+            else:
+                warnings.append(f"{label(case)}: 503 twice (Wikidata busy?)")
     if times:
         p50 = statistics.median(times) * 1000
         p95 = percentile(times, 0.95) * 1000
@@ -174,7 +208,7 @@ def check(
             failures.append(f"p50 {p50:.0f} ms is over the {p50_ms:.0f} ms limit")
         if p95 > p95_ms:
             failures.append(f"p95 {p95:.0f} ms is over the {p95_ms:.0f} ms limit")
-    elif not failures:
+    elif not failures and cases is None:
         failures.append("no lookup completed")
     return failures, warnings, info
 
@@ -208,13 +242,31 @@ def main() -> int:
         "--expect-version", help="fail unless /health reports this version"
     )
     parser.add_argument(
+        "--busy-retry-seconds",
+        type=float,
+        default=10,
+        help="smoke mode: wait this long, then retry cases that got 503",
+    )
+    parser.add_argument(
+        "--warn-exit-code",
+        type=int,
+        default=0,
+        help="exit code when every check passed but there were warnings",
+    )
+    parser.add_argument(
         "--webhook-env",
         help="environment variable holding a webhook URL to post failures to",
     )
     args = parser.parse_args()
     cases = load_cases(args.smoke) if args.smoke else None
     failures, warnings, info = check(
-        args.url, args.samples, args.p50_ms, args.p95_ms, cases, args.expect_version
+        args.url,
+        args.samples,
+        args.p50_ms,
+        args.p95_ms,
+        cases,
+        args.expect_version,
+        args.busy_retry_seconds,
     )
     for line in info:
         print(f"info: {line}")
@@ -227,6 +279,9 @@ def main() -> int:
         if hook:
             notify(hook, f"entity-resolver monitor: {'; '.join(failures)}")
         return 1
+    if warnings:
+        print("ok, with warnings")
+        return args.warn_exit_code
     print("ok")
     return 0
 

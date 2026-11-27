@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import logging
+import sys
 import threading
 import time
 import urllib.error
@@ -464,6 +466,22 @@ def test_json_formatter_emits_one_valid_object_per_line(api, capsys):
     assert entry["duration_ms"] >= 0
 
 
+def test_application_errors_keep_message_and_traceback(api, capsys):
+    capsys.readouterr()
+
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError:
+        logging.getLogger("entity_resolver.uploads").exception("Job %s crashed", "j1")
+
+    lines = capsys.readouterr().err.splitlines()
+    records = [json.loads(line) for line in lines if line.startswith("{")]
+    entry = next(r for r in records if r.get("msg") == "Job j1 crashed")
+
+    assert entry["level"] == "ERROR"
+    assert "RuntimeError: boom" in entry["exc"]
+
+
 def test_metrics_render_is_prometheus_text():
     m = Metrics()
 
@@ -518,6 +536,9 @@ def test_metrics_count_http_errors_by_route(api):
     )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows reads the backslash in the name as a path"
+)
 def test_download_name_cannot_inject_header_characters(client):  # noqa: F811
     rows = [["Company"], ["Apple Inc."]]
     meta = upload(client, csv_bytes(rows), 'evil"; x=y\\.csv').json()

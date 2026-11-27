@@ -90,5 +90,5 @@ Found by external testers, not by our tests, monitoring or evaluation. The first
 | Scheduled uptime and canary check (`scripts/monitor.py`, `uptime.yml`) | Done |
 | Back up the alias index and test a restore (`scripts/backup_index.py`) | Done |
 | Add junk-input, same-name and non-company queries to `eval/` so this class of failure shows up in our own numbers | Open |
-| Fix the Time Warner alias and clean headquarters and parent data in `build_index.py` | Open |
+| Fix the Time Warner alias (done: dropped at index load, #84) and clean headquarters and parent data in `build_index.py` | Time Warner done; data cleaning open |
 | Hold out part of the evaluation set so the threshold is not tuned on what it reports | Open |

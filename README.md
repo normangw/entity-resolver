@@ -43,7 +43,7 @@ cp .env.example .env
 | `UPLOAD_MAX_ROWS` | `5000` | Most data rows resolved per file |
 | `UPLOAD_TTL_SECONDS` | `3600` | Uploads and results are deleted this long after upload |
 | `UPLOAD_MAX_RUNNING` | `3` | Files resolved at the same time; more get `429` |
-| `ALIAS_INDEX_PATH` | bundled `companies.json` | Local alias index loaded once at startup |
+| `ALIAS_INDEX_PATH` | bundled `companies.json` (5-company seed) | Local alias index loaded once at startup. In Docker the full index lives in the `alias-index` volume: `/data/index/companies.full.json` (see [Load the full index](#load-the-full-index)) |
 | `API_KEY` | unset | Shared secret sent as the `X-API-Key` header. Unset means open (the public demo). When set it is required on `/resolve/batch` and `/metrics` |
 | `API_KEY_PROTECT_ALL` | `false` | Also require the key on `/resolve` and `/upload*`. The web page cannot send a key, so this turns the page off |
 | `RATE_LIMIT_RESOLVE_PER_MIN` | `120` | `/resolve` requests per client address per minute (`0` = no limit); over it, `429` with `Retry-After` |
@@ -123,19 +123,21 @@ On a fresh clone, this is the whole start procedure:
 git clone https://github.com/normangw/entity-resolver.git
 cd entity-resolver
 cp .env.example .env        # optional: without .env the built-in defaults apply
-docker compose up -d        # builds the image on first run, then starts it
-docker compose ps           # STATUS should show "(healthy)" after ~10 s
+docker compose up -d        # pulls the published :main image (or builds it), then starts it
+docker compose ps           # STATUS should show "(healthy)" after ~30 s
 ```
 
-`compose.yml` runs two services: `api` (port 8000, not published) and `proxy`, an nginx reverse proxy that publishes port 80 and forwards to `api`. `nginx.conf` limits each client IP to 10 requests per second with a burst of 30 (extra requests get `429`), caps request bodies at 12 MB, hides the nginx version, and adds `X-Content-Type-Options`, `Referrer-Policy` and `X-Frame-Options` headers. The API sees the real client address through `X-Forwarded-For`. There is no database, vector store or cache. The alias index is kept in the named volume `alias-index`, and the service uses `restart: unless-stopped`, so it comes back by itself after a reboot or a Jetstream2 unshelve.
+Add `--build` to run your working tree instead of the published image. Without a `.env`, the app serves the bundled 5-company seed index, so this works with no data.
+
+`compose.yml` runs two services: `api` (port 8000, not published) and `proxy`, an nginx reverse proxy that publishes port 80 and forwards to `api`. `nginx.conf` limits each client IP to 10 requests per second with a burst of 30 (extra requests get `429`), caps request bodies at 12 MB, hides the nginx version, and adds `X-Content-Type-Options`, `Referrer-Policy` and `X-Frame-Options` headers. The API sees the real client address through `X-Forwarded-For`. There is no database, vector store or cache. The full alias index is kept outside the image in the named volume `alias-index` (mounted at `/data/index`), and the service uses `restart: unless-stopped`, so it comes back by itself after a reboot or a Jetstream2 unshelve.
 
 Useful commands:
 
 ```bash
 docker compose logs -f api              # follow the logs
 docker compose up -d --build            # rebuild after a code change
-docker compose down                     # stop (keeps the volume)
-docker compose down -v                  # stop and delete the volume (reseeds the index next start)
+docker compose down                     # stop (keeps the volumes)
+docker compose down -v                  # stop and delete the volumes (the index must be loaded again)
 ```
 
 To build and run the image without Compose:
@@ -149,16 +151,39 @@ docker run -d --name entity-resolver -p 8000:8000 --env-file .env entity-resolve
 
 1. SSH to the instance and install Docker if it isn't there (`curl -fsSL https://get.docker.com | sudo sh`, then `sudo usermod -aG docker $USER` and log in again).
 2. Make sure Docker starts at boot: `sudo systemctl enable docker`.
-3. Clone and start the stack with the commands above.
-4. Allow inbound TCP 80 in the instance's security group in Exosphere/Horizon, and remove the old rule for 8000.
-5. From your own laptop, check it answers from outside:
+3. Clone the repository and copy `.env.production.example` to `.env` (it sets `ALIAS_INDEX_PATH=/data/index/companies.full.json`).
+4. Load the full index into the volume, then deploy a release (both described below).
+5. Allow inbound TCP 80 in the instance's security group in Exosphere/Horizon, and remove the old rule for 8000.
+6. From your own laptop, check it answers from outside:
 
 ```bash
 export HOST=<instance-public-ip>
 curl http://$HOST/health
 ```
 
-6. Open `http://$HOST/` in a browser to use the web UI.
+7. Open `http://$HOST/` in a browser to use the web UI.
+
+#### Load the full index
+
+The image carries only the 5-company seed. The full index (`data/companies.full.json`, about 20 minutes to rebuild and git-ignored) goes into the `alias-index` volume, so deploys and rollbacks never touch it:
+
+```bash
+scripts/load_index.sh data/companies.full.json            # an index file
+scripts/load_index.sh backups/alias-index-20261027.tar.gz # or a backup archive
+```
+
+It runs `scripts/backup_index.py` in a one-off container from the api image: the file is checked (checksum, company count, that it loads) and written atomically to `/data/index/companies.full.json`, then a running api is restarted to load it. Swapping in a rebuilt index is the same command.
+
+#### Deploy and roll back
+
+CI publishes `ghcr.io/normangw/entity-resolver:<sha>` and `:main` for every commit on `main`, and a `vX.Y.Z` tag adds `:X.Y.Z` (see `.github/workflows/`). The server only pulls those images:
+
+```bash
+scripts/deploy.sh 0.2.0        # deploy a release
+scripts/deploy.sh --previous   # roll back to the last good version before it
+```
+
+`deploy.sh` pulls the image, records its digest, runs `docker compose up -d`, waits until the container is healthy and `/ready` answers, then checks the known-good answers in `eval/smoke.jsonl` with `scripts/monitor.py` (and that `/health` reports the version). A wrong answer fails the deploy, and so does a `503` on a case answered from the local index (one that expects `"source": "local"`). A `503` on a case that needs Wikidata is its designed throttling answer: it is retried once after 10 s and, if still busy, logged as `WARN` rather than failing. Each attempt appends `<time> <version> <digest> <result>` (`ok`, `WARN` or `failed-<step>`) to `~/entity-resolver-deploy.log`; `--previous` reads it and treats `ok` and `WARN` as good versions. On a failure it exits non-zero and prints the rollback command. `--dry-run` shows what it would do. Deploy only through the script: a bare `docker compose up -d` runs `:main` unless `VERSION` is set.
 
 ### Call every endpoint
 
@@ -345,13 +370,13 @@ A name that scores below `MATCH_THRESHOLD` (and is not settled by the tiebreak) 
 
 ## Design decisions and known limits
 
-Answers to questions raised during user testing (issues #42 to #92).
+Answers to questions raised during user testing (issues #42 to #92). [docs/tester-responses.md](docs/tester-responses.md) lists every tester issue with its fix, answer or reason for not fixing it.
 
-- **Split and renamed companies.** `General Electric` resolves to GE Aerospace (the renamed parent; GE Vernova and GE HealthCare were spun off in 2023-24) and `Hewlett-Packard` to the old HP. The index cannot tell which successor an old contract belongs to, so names on a small list (`General Electric`, `Hewlett-Packard`, `Time Warner`) come back with `needs_review: true` and a `note` naming the successors. `Time Warner` still resolves to Time Warner Cable because that is the alias the index holds; the note says the media company is a different entity. Pick the successor by hand.
+- **Split and renamed companies.** `General Electric` resolves to GE Aerospace (the renamed parent; GE Vernova and GE HealthCare were spun off in 2023-24) and `Hewlett-Packard` to the old HP. The index cannot tell which successor an old contract belongs to, so names on a small list (`General Electric`, `Hewlett-Packard`, `Time Warner`) come back with `needs_review: true` and a `note` naming the successors. `Time Warner` no longer resolves to Time Warner Cable: Wikidata files that alias under the cable company, so it is dropped when the index loads (`_WRONG_ALIASES` in `resolver.py`), and with Region set to World the name goes to Wikidata, which returns the media company (WarnerMedia). Wikidata may still list AT&T as WarnerMedia's parent; the note says it is now part of Warner Bros. Discovery. Pick the successor by hand.
 - **Brands and d/b/a names.** With the Wikidata fallback on by default, a brand resolves to its own entity and `parent_company` is its owner when Wikidata records one (`YouTube` to `Google`). A brand with no owner on record (`Sam's Club`, `Instagram` in some cases) has `parent_company: null`. In `X d/b/a Y` the legal entity X is tried first, then the brand Y.
 - **Which alias matched.** `matched_alias` returns the stored alias. It does not yet say whether it was a ticker, an old name or a translation.
 - **As-of date.** `as_of` is the index build date for local matches and the lookup date for Wikidata, whose parent and headquarters values can be out of date (`WarnerMedia`'s parent, `Dow`'s parent). Wikidata answers are cached for `WIKIDATA_CACHE_TTL` seconds.
-- **Using the API directly.** It is meant to be used, one name per `POST /resolve`. For lists use the spreadsheet upload. There is no batch endpoint, API key or rate limit, so do not point a script at the public demo: it shares the Wikidata and GLEIF budget, and Wikidata throttles (you get `503`, not a wrong answer). Add a gateway rate limit before exposing it more widely.
+- **Using the API directly.** It is meant to be used, one name per `POST /resolve`, or up to 100 names per `POST /resolve/batch` (which requires the API key when `API_KEY` is set). For files use the spreadsheet upload. Each client is rate-limited (`429` with `Retry-After`), and the demo shares one Wikidata and GLEIF budget, so a script should back off on `429` and `503` (Wikidata throttling gives `503`, not a wrong answer).
 - **Headquarters format.** `headquarters` is whatever Wikidata or the index stores, so it can be a city, district or building and may not match `country` (`Philip Morris`, `Tencent`, `HSBC`). It is not cleaned up. Treat it as a hint and `country` (local matches only) as the more reliable field.
 
 - **Join key.** Join on `wikidata_id`. It is stable across runs and languages. `canonical_name` is always the English name but can change if Wikidata or the index is rebuilt. The index does not carry a version yet, so keep the file you resolved alongside its results. The stored `identifier` is the company's LEI (used only for the GLEIF tiebreak) and is not returned.
@@ -443,7 +468,7 @@ python scripts/backup_index.py verify backups/alias-index-20261027.tar.gz # chec
 python scripts/backup_index.py restore backups/alias-index-20261027.tar.gz data/
 ```
 
-The archive holds the index, its metadata and a SHA-256 manifest. `restore` refuses a damaged archive, checks that the index loads, and writes atomically. After restoring on the instance, copy the file to `src/entity_resolver/data/companies.json` and rebuild as in the deployment steps (`docker compose down -v` if the volume holds an old index). Uploads are temporary by design and are not backed up. The tests do a backup, a restore and a corrupted-archive case; the restore was also checked byte for byte against the real index.
+The archive holds the index, its metadata and a SHA-256 manifest. `restore` refuses a damaged archive, checks that the index loads, and writes atomically. On the instance, restore straight into the volume with `scripts/load_index.sh <archive>` (see [Load the full index](#load-the-full-index)); no rebuild is needed. Uploads are temporary by design and are not backed up. The tests do a backup, a restore and a corrupted-archive case; the restore was also checked byte for byte against the real index.
 
 ## Monitoring
 

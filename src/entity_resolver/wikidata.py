@@ -67,6 +67,15 @@ _NOT_COMPANY_CLASSES = frozenset(
         "Q33506",  # government agency, political party, museum
         "Q163740",
         "Q79913",  # nonprofit organization, NGO
+        "Q4120211",
+        "Q1335818",  # regional organization, supranational union (EU)
+        "Q1345691",
+        "Q105758271",
+        "Q15925165",  # financial institution, development bank, UN agency (World Bank)
+        "Q97234439",  # city government ("City of Chicago")
+        "Q1194093",
+        "Q1968122",
+        "Q336473",  # international NGO, national Red Cross society, aid agency
     }
 )
 # How many search hits to read. Few hits let other meanings of a common word
@@ -334,11 +343,16 @@ class WikidataClient:
         # Limited in India). Take the best score, then the most widely documented
         # one (most Wikipedia sitelinks), which is almost always the one meant.
         companies: list[tuple[float, int, dict[str, Any], dict[str, Any]]] = []
+        # Best score among hits skipped as non-companies. If the name matches a
+        # university better than any company, the input names the university, and
+        # a related company-like hit ("Georgetown University Press") is not it.
+        best_non_company = 0.0
         for hit, score in scored:
             entity = entities[hit["id"]]
             claims = entity.get("claims", {})
             kinds = set(_statement_ids(claims, _INSTANCE_OF, include_ended=True))
             if kinds & _NOT_COMPANY_CLASSES:
+                best_non_company = max(best_non_company, score)
                 continue
             if any(prop in claims for prop in _COMPANY_PROPS):
                 links = len(entity.get("sitelinks", {}))
@@ -347,6 +361,8 @@ class WikidataClient:
             return None
         companies.sort(key=lambda c: (c[0], c[1]), reverse=True)
         score, _, hit, claims = companies[0]
+        if best_non_company > score:
+            return None
         ambiguous = any(c[0] == score for c in companies[1:])
         match = self._build(hit, claims, score, language)
         return Match(match.entity, match.score, ambiguous=ambiguous)
