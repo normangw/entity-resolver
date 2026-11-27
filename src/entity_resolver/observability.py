@@ -10,6 +10,7 @@ import logging
 import re
 import sys
 import time
+import traceback
 import uuid
 from typing import Any
 
@@ -69,11 +70,11 @@ class InterceptHandler(logging.Handler):
             fields["scorer"] = scorer if scorer in {"ratio", "WRatio"} else "none"
             event = "resolution"
         else:
-            event = "application_event"
-            if record.exc_info:
-                event = "application_error"
+            # Our own messages never include user input (the privacy tests check
+            # this), so the text and any traceback are kept for debugging.
+            event = record.getMessage()
 
-        loguru_logger.bind(**fields).log(level, event)
+        loguru_logger.bind(**fields).opt(exception=record.exc_info).log(level, event)
 
 
 def _json_sink(message: Any) -> None:
@@ -100,7 +101,13 @@ def _json_sink(message: Any) -> None:
         if key in extra:
             entry[key] = extra[key]
 
-    print(json.dumps(entry, ensure_ascii=False), file=sys.stderr)
+    exc = record["exception"]
+    if exc is not None and exc.type is not None:
+        entry["exc"] = "".join(
+            traceback.format_exception(exc.type, exc.value, exc.traceback)
+        )
+
+    sys.stderr.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def configure_logging(fmt: str = "json", level: str = "INFO") -> None:
