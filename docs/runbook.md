@@ -234,7 +234,27 @@ uploads (deleted after an hour, owned by the user who can upload again), Caddy's
 certificates (Caddy gets new ones; losing them only costs a Let's Encrypt request),
 logs (rotated, not a record). There is no database.
 
-<!-- TODO(#106): paste real output of backup, scp and verify -->
+**Drill result (2026-11-27).** On the instance, with 0.2.0 running:
+```
+$ docker compose run --rm --no-deps -T -u "$(id -u):$(id -g)" -v "$PWD/scripts:/scripts:ro" \
+    -v "$PWD/backups:/out" --entrypoint python api /scripts/backup_index.py backup /data/index/companies.full.json /out
+wrote /out/alias-index-20261027.tar.gz
+$ ls -l backups/
+-rw-r--r-- 1 exouser exouser 934290 Nov 27 21:54 alias-index-20261027.tar.gz
+```
+From the laptop:
+```
+$ scp 'exouser@149.165.149.202:entity-resolver/backups/alias-index-*.tar.gz' ~/entity-resolver-backups/
+alias-index-20261027.tar.gz      100%  912KB   2.7MB/s   00:00
+$ python3 scripts/backup_index.py verify ~/entity-resolver-backups/alias-index-*.tar.gz
+{
+  "index_sha256": "f137279f1e2ba611872b8f60e5933fa0907d5a253f9de95bc661b9faff2d4084",
+  "companies": 14127,
+  "built_at": "20261027"
+}
+```
+The archive is named after the index build date, not the backup date, so this
+copy has the same name and size as the one restored in section 6.
 
 ## 6. Restore the index
 
