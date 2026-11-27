@@ -5,9 +5,8 @@ This document supersedes the Deliverable 2 snapshot in `docs/deliverable2/`
 GitHub renders them in place. Numbers in square brackets, such as **[T7]**, are rows
 of the [time-limits table](time-limits.md).
 
-Parts marked *(planned, #102)* are Prometheus and Grafana, which the observability
-work adds; they are drawn so the picture is complete, and are not in `compose.yml`
-yet.
+Prometheus and Grafana run in the opt-in `observability` compose profile, which the
+live instance enables with `COMPOSE_PROFILES=observability` in `.env` (#121).
 
 <!-- TODO(#106): export each diagram to SVG/PNG (mermaid-cli: npx @mermaid-js/mermaid-cli -i docs/architecture.md) if the slides need images. -->
 
@@ -58,13 +57,13 @@ flowchart LR
         subgraph net["compose network"]
             P["proxy: Caddy 2.11.8<br/>ports 80, 443 published<br/>TLS, headers, body limits"]
             API["api: uvicorn + FastAPI<br/>port 8000, not published<br/>one process, worker threads"]
-            PR["prometheus (planned, #102)<br/>not published"]
-            GR["grafana (planned, #102)<br/>127.0.0.1:3000 only"]
+            PR["prometheus<br/>not published"]
+            GR["grafana<br/>127.0.0.1:3000 only"]
         end
         V1[("alias-index volume<br/>/data/index")]
         V2[("uploads volume<br/>/data/uploads")]
         V3[("caddy-data, caddy-config")]
-        V4[("prometheus, grafana volumes<br/>(planned)")]
+        V4[("prometheus-data, grafana-data")]
         DL["~/entity-resolver-deploy.log"]
     end
     subgraph External["Outside services"]
@@ -90,7 +89,7 @@ flowchart LR
 ```
 
 Only the proxy publishes ports. The api trusts the client address Caddy writes into
-`X-Forwarded-For`. Grafana, once added, listens on loopback and is reached through
+`X-Forwarded-For`. Grafana listens on loopback and is reached through
 `ssh -L 3000:localhost:3000`.
 
 ## 3. State view: what is kept, where, and for how long
