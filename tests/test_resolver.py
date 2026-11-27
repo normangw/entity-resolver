@@ -272,8 +272,39 @@ def test_variants_strip_vendor_numbers_cities_and_dba():
     assert variants("Apple Inc.") == ["Apple Inc."]
 
 
+def test_placeholders_are_generic_but_real_names_are_not():
+    from entity_resolver.resolver import is_generic
+
+    for junk in ["N/A", "#N/A", "n.a.", "NaN", "T.B.D.", "Unknown"]:
+        assert is_generic(junk), junk
+    for name in ["NAPA Auto Parts", "Nana", "NAN YA Plastics", "NBA"]:
+        assert not is_generic(name), name
+
+
 def test_split_companies_carry_a_review_note():
     from entity_resolver.resolver import note_for
 
     assert "GE Vernova" in (note_for("General Electric") or "")
     assert note_for("Apple") is None
+
+
+def test_time_warner_no_longer_resolves_to_time_warner_cable(tmp_path):
+    # Wikidata lists "Time Warner" as an alias of Time Warner Cable (#84).
+    resolver = Resolver(
+        make_index(
+            tmp_path,
+            [
+                rec(
+                    "Q1885099",
+                    "Time Warner Cable",
+                    ["Time Warner Cable", "TWC", "Time Warner", "Time-Warner"],
+                    parent="Charter Communications",
+                )
+            ],
+        )
+    )
+    for name in ["Time Warner", "Time-Warner", "Time Warner Inc."]:
+        assert resolver.resolve(name) is None, name
+    match = resolver.resolve("Time Warner Cable")
+    assert match is not None
+    assert match.entity.wikidata_id == "Q1885099"

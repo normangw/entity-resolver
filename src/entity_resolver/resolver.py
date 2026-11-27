@@ -39,6 +39,10 @@ _GENERIC_NAMES = frozenset(
     "plc group groups stores store the and usa us uk paris london tokyo "
     "tbd tba tbc na n a nil null none unknown test misc other various".split()
 )
+# Placeholders that normalize to several tokens ("N/A" -> "n a", "#N/A" -> "n a",
+# "n.a." -> "na"), compared with the spaces removed. Excel's "#N/A" error value is
+# common in exported vendor columns.
+_PLACEHOLDERS = frozenset("na nan nil null none tbd tba tbc unknown".split())
 # A real company name has at least this many letters or digits. One character is
 # a placeholder ("T", "V", "-"), and a bare ticker that short is too ambiguous.
 _MIN_QUERY_LENGTH = 2
@@ -58,6 +62,13 @@ _NOTES = {
         "Time Warner Inc. (media) became WarnerMedia and is now part of Warner Bros. "
         "Discovery. Time Warner Cable is a separate company, now part of Charter."
     ),
+}
+# Aliases Wikidata attaches to the wrong company, by Wikidata id and normalized
+# alias. They are dropped when any index loads, so a rebuilt index stays fixed too.
+# Time Warner Cable carries "Time Warner" and "Time-Warner", which belong to the
+# media company Time Warner Inc. (later WarnerMedia); see #84.
+_WRONG_ALIASES: dict[str, frozenset[str]] = {
+    "Q1885099": frozenset({"time warner"}),
 }
 # Noise found in real vendor columns: notes in brackets, vendor numbers, a city.
 _NOISE_PARENS = re.compile(r"\([^)]*\)|\[[^\]]*\]")
@@ -117,11 +128,14 @@ def normalize(name: str) -> str:
 
 def is_generic(name: str) -> bool:
     """True for input that is not a company name: a bare word or legal form
-    ("Bank"), a placeholder ("TBD"), or fewer than two letters or digits ("T", "?").
+    ("Bank"), a placeholder ("TBD", "N/A", "#N/A"), or fewer than two letters or
+    digits ("T", "?").
     """
     query = normalize(name)
     return (
-        sum(ch.isalnum() for ch in query) < _MIN_QUERY_LENGTH or query in _GENERIC_NAMES
+        sum(ch.isalnum() for ch in query) < _MIN_QUERY_LENGTH
+        or query in _GENERIC_NAMES
+        or query.replace(" ", "") in _PLACEHOLDERS
     )
 
 
@@ -225,6 +239,8 @@ class Resolver:
             for alias in rec["aliases"]:
                 normalized = normalize(alias)
                 if not normalized:  # a symbol-only alias would match any symbol
+                    continue
+                if normalized in _WRONG_ALIASES.get(entity.wikidata_id, ()):
                     continue
                 self._choices.append(normalized)
                 self._aliases.append(alias)
