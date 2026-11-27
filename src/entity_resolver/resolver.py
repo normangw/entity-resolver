@@ -39,6 +39,10 @@ _GENERIC_NAMES = frozenset(
     "plc group groups stores store the and usa us uk paris london tokyo "
     "tbd tba tbc na n a nil null none unknown test misc other various".split()
 )
+# Placeholders that normalize to several tokens ("N/A" -> "n a", "#N/A" -> "n a",
+# "n.a." -> "na"), compared with the spaces removed. Excel's "#N/A" error value is
+# common in exported vendor columns.
+_PLACEHOLDERS = frozenset("na nan nil null none tbd tba tbc unknown".split())
 # A real company name has at least this many letters or digits. One character is
 # a placeholder ("T", "V", "-"), and a bare ticker that short is too ambiguous.
 _MIN_QUERY_LENGTH = 2
@@ -117,11 +121,14 @@ def normalize(name: str) -> str:
 
 def is_generic(name: str) -> bool:
     """True for input that is not a company name: a bare word or legal form
-    ("Bank"), a placeholder ("TBD"), or fewer than two letters or digits ("T", "?").
+    ("Bank"), a placeholder ("TBD", "N/A", "#N/A"), or fewer than two letters or
+    digits ("T", "?").
     """
     query = normalize(name)
     return (
-        sum(ch.isalnum() for ch in query) < _MIN_QUERY_LENGTH or query in _GENERIC_NAMES
+        sum(ch.isalnum() for ch in query) < _MIN_QUERY_LENGTH
+        or query in _GENERIC_NAMES
+        or query.replace(" ", "") in _PLACEHOLDERS
     )
 
 
