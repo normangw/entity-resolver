@@ -20,11 +20,19 @@ def _compose() -> dict:
 
 
 def test_only_the_proxy_publishes_ports_and_only_80_and_443_tcp():
-    """No service but the proxy publishes a port, and it publishes 80 and 443/tcp."""
+    """Only the proxy is reachable from outside, on 80 and 443/tcp.
+
+    Other services may bind to host loopback only (Grafana, reached over an SSH
+    tunnel), which the internet cannot reach.
+    """
     services = _compose()["services"]
     published = {name: svc.get("ports", []) for name, svc in services.items()}
     assert published.pop("proxy") == ["80:80/tcp", "443:443/tcp"]
-    assert all(not ports for ports in published.values()), published
+    public = {
+        name: [p for p in ports if not str(p).startswith("127.0.0.1:")]
+        for name, ports in published.items()
+    }
+    assert all(not ports for ports in public.values()), public
 
 
 def test_every_image_is_pinned_by_digest():

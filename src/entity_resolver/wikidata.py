@@ -33,6 +33,7 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
+from entity_resolver.observability import metrics
 from entity_resolver.resolver import Entity, Match, normalize
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,15 @@ _NOT_COMPANY_CLASSES = frozenset(
         "Q33506",  # government agency, political party, museum
         "Q163740",
         "Q79913",  # nonprofit organization, NGO
+        "Q4120211",
+        "Q1335818",  # regional organization, supranational union (EU)
+        "Q1345691",
+        "Q105758271",
+        "Q15925165",  # financial institution, development bank, UN agency (World Bank)
+        "Q97234439",  # city government ("City of Chicago")
+        "Q1194093",
+        "Q1968122",
+        "Q336473",  # international NGO, national Red Cross society, aid agency
     }
 )
 # How many search hits to read. Few hits let other meanings of a common word
@@ -210,10 +220,12 @@ class CircuitBreaker:
             self._opened_at = None
 
     def failure(self) -> None:
-        """Count one more failure, and open the breaker at ``threshold``."""
+        """Count a failure and record when the circuit breaker opens."""
         with self._lock:
             self._failures += 1
             if self._failures >= self._threshold:
+                if self._opened_at is None:
+                    metrics.inc("wikidata_breaker_opens_total")
                 self._opened_at = self._clock()
 
     @property
@@ -326,7 +338,10 @@ class WikidataClient:
             cached = self._cache.get(key)
             if cached is not None and self._clock() - cached[0] < self._ttl:
                 self._cache.move_to_end(key)
+                metrics.inc("wikidata_cache_requests_total", result="hit")
                 return cached[1]
+        if self._ttl > 0:
+            metrics.inc("wikidata_cache_requests_total", result="miss")
         if not self.breaker.allow():
             raise WikidataUnavailable(
                 "circuit open: Wikidata keeps failing",
@@ -342,8 +357,8 @@ class WikidataClient:
             wait = DEFAULT_RETRY_AFTER if exc.retry_after is None else exc.retry_after
             raise WikidataUnavailable(str(exc), retry_after=max(1.0, wait)) from exc
         except (OSError, ValueError) as exc:  # network failure, deadline, bad JSON
-            # The name is user input, so it is not logged.
-            logger.warning("Wikidata lookup failed: %s", exc)
+            # External error text may contain a private company name or URL.
+            logger.warning("Wikidata lookup failed")
             self.breaker.failure()
             raise WikidataUnavailable(str(exc)) from exc
         self.breaker.success()
@@ -366,14 +381,19 @@ class WikidataClient:
         Timeouts, dropped connections and 5xx are retried up to ``retries`` times.
         A 429 is waited out once per lookup when its ``Retry-After`` is at most
         ``max_retry_after`` and fits before the deadline; otherwise it ends the
-        lookup (``_Throttled``). No call or wait starts past the deadline.
+        lookup (``_Throttled``). No call or wait starts past the deadline. Each
+        attempt's duration goes to the Wikidata latency histogram.
         """
         attempt = 0
         while True:
             if self._left() <= 0:
                 raise _DeadlineExceeded("Wikidata lookup deadline passed")
             try:
-                return self._raw_fetch(params)
+                started = time.perf_counter()
+                try:
+                    return self._raw_fetch(params)
+                finally:
+                    metrics.observe_wikidata(time.perf_counter() - started)
             except urllib.error.HTTPError as exc:
                 if exc.code != 429:
                     error: Exception = exc
@@ -440,11 +460,16 @@ class WikidataClient:
         # Limited in India). Take the best score, then the most widely documented
         # one (most Wikipedia sitelinks), which is almost always the one meant.
         companies: list[tuple[float, int, dict[str, Any], dict[str, Any]]] = []
+        # Best score among hits skipped as non-companies. If the name matches a
+        # university better than any company, the input names the university, and
+        # a related company-like hit ("Georgetown University Press") is not it.
+        best_non_company = 0.0
         for hit, score in scored:
             entity = entities[hit["id"]]
             claims = entity.get("claims", {})
             kinds = set(_statement_ids(claims, _INSTANCE_OF, include_ended=True))
             if kinds & _NOT_COMPANY_CLASSES:
+                best_non_company = max(best_non_company, score)
                 continue
             if any(prop in claims for prop in _COMPANY_PROPS):
                 links = len(entity.get("sitelinks", {}))
@@ -453,6 +478,8 @@ class WikidataClient:
             return None
         companies.sort(key=lambda c: (c[0], c[1]), reverse=True)
         score, _, hit, claims = companies[0]
+        if best_non_company > score:
+            return None
         ambiguous = any(c[0] == score for c in companies[1:])
         match = self._build(hit, claims, score, language)
         return Match(match.entity, match.score, ambiguous=ambiguous)
@@ -462,33 +489,34 @@ class WikidataClient:
     ) -> Match:
         """A match from one search hit, including its parent and headquarters.
 
-        ``canonical_name`` stays English. When ``language`` is not English the
-        display name goes in ``label``.
+        ``canonical_name`` stays English (the search runs with ``uselang=en``, so
+        the hit's label is English). When ``language`` is not English, the label in
+        that language is fetched and goes in ``label`` (#113).
         """
-        name = hit.get("label", hit["id"])
-        canonical = name
-        if language != "en":
-            # canonical_name stays English so one company is one name for joins;
-            # the translated name goes in ``label``.
-            canonical = self._labels([hit["id"]], "en").get(hit["id"], name)
+        canonical = hit.get("label", hit["id"])
         parent_ids = self._owner_ids(claims)
         hq_ids = _statement_ids(claims, _HQ_PROP)[:1]
-        labels = self._labels([*parent_ids, *hq_ids], language)
+        # One labels call covers the entity itself, its owners and its HQ.
+        labels = self._labels([hit["id"], *parent_ids, *hq_ids], language)
+        # ``_labels`` falls back to English, so an entity with no label in this
+        # language comes back equal to ``canonical`` and gets no ``label``.
+        translated = labels.pop(hit["id"], canonical)
+        own_names = {normalize(canonical), normalize(translated)}
         # The first owner with a label wins: P749 before P127, and an owner
         # that has no label in this language (or English) is skipped.
         parent_id = next((i for i in parent_ids if i in labels), None)
         for _ in range(_MAX_WRAPPER_HOPS):
-            if parent_id is None or normalize(labels[parent_id]) != normalize(name):
+            if parent_id is None or normalize(labels[parent_id]) not in own_names:
                 break
             parent_id = self._owner_of(parent_id, labels, language)
-        if parent_id is not None and normalize(labels[parent_id]) == normalize(name):
+        if parent_id is not None and normalize(labels[parent_id]) in own_names:
             parent_id = None  # only ever found the entity's own wrapper
         entity = Entity(
             wikidata_id=hit["id"],
             canonical_name=canonical,
             parent_company=labels[parent_id] if parent_id else None,
             headquarters=labels.get(hq_ids[0]) if hq_ids else None,
-            label=name if name != canonical else None,
+            label=translated if translated != canonical else None,
         )
         return Match(entity=entity, score=round(score, 3))
 

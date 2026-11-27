@@ -17,11 +17,20 @@ RapidFuzz scorers over the alias index. Each scorer is run once per query and ev
 threshold is applied to that score. ``--detail scorer@threshold`` prints the
 per-category breakdown for one setting; ``--ablate`` re-runs it with parts of the
 preprocessing switched off.
+
+The scorer table looks only at the best fuzzy score, so it skips what the running
+service adds: the guard for junk and generic words, the short-name rule, the
+same-name tie-break and the Wikidata fallback. ``--service`` sends every query
+through ``POST /resolve`` of the app itself (in process, with the given index) and
+prints each miss. ``--wikidata`` turns the live fallback on for that run, so
+results depend on Wikidata at that moment.
 """
 
 import argparse
 import json
+import os
 import re
+import time
 import unicodedata
 from collections import defaultdict
 from collections.abc import Callable
@@ -179,16 +188,112 @@ def ablate(index: Path, queries: list[dict], scorer: str, threshold: float) -> N
         print(f"  {label:<22}{acc:>10}{wrong:>8}{missed:>8}{neg:>15}")
 
 
+# --- the running service -----------------------------------------------------
+
+# An answer id for a request the service failed (5xx); it never equals an expected
+# id, so it counts as wrong, or as a false match for a should-not-match query.
+_FAILED = "<service error>"
+
+
+def service_answers(
+    index: Path, queries: list[dict], wikidata: bool, pause: float = 0.0
+) -> tuple[list[Answer], list[str]]:
+    """Answers from ``POST /resolve`` of the app, and the source of each answer.
+
+    The app is started in process with ``index`` as its alias index. Rate limits
+    are off, ``wikidata`` turns the live fallback on or off, and ``pause`` seconds
+    pass between queries so Wikidata does not throttle the run.
+    """
+    os.environ["ALIAS_INDEX_PATH"] = str(index.resolve())
+    os.environ["WIKIDATA_FALLBACK"] = "true" if wikidata else "false"
+    os.environ["RATE_LIMIT_RESOLVE_PER_MIN"] = "0"
+    os.environ["GLEIF_ENABLED"] = "false"
+    # Imported here: the app reads its settings at import time, from the variables
+    # set just above.
+    from fastapi.testclient import TestClient
+
+    from entity_resolver.main import app
+
+    answers: list[Answer] = []
+    sources: list[str] = []
+    with TestClient(app) as client:
+        deadline = time.monotonic() + 300
+        while client.get("/ready").status_code != 200:
+            if time.monotonic() > deadline:
+                raise SystemExit("the index did not load within 300 s")
+            time.sleep(0.2)
+        for n, q in enumerate(queries):
+            if n and pause:
+                time.sleep(pause)
+            body = {"company_name": q["query"], "region": q.get("region", "world")}
+            response = client.post("/resolve", json=body)
+            if response.status_code >= 500:
+                answers.append((_FAILED, 1.0))
+                sources.append(f"HTTP {response.status_code}")
+                continue
+            data = response.json()
+            if response.status_code != 200:  # a 422 for input the API rejects
+                answers.append((None, 0.0))
+                sources.append(f"HTTP {response.status_code}")
+            elif data["status"] == "resolved":
+                answers.append((data["wikidata_id"], 1.0))
+                sources.append(f"{data['source']}: {data['canonical_name']}")
+            else:
+                answers.append((None, 0.0))
+                sources.append("unresolved")
+    return answers, sources
+
+
+def print_misses(
+    queries: list[dict], answers: list[Answer], sources: list[str]
+) -> None:
+    """List every query the service got wrong, with what it answered."""
+    print("\nMisses")
+    misses = 0
+    for q, (got, _), source in zip(queries, answers, sources, strict=True):
+        if got != q["expected"]:
+            misses += 1
+            want = q["expected"] or "unresolved"
+            print(f"  [{q['category']}] {q['query']!r}: expected {want}, got {source}")
+    if not misses:
+        print("  none")
+
+
 def main() -> None:
+    """Parse the arguments and print the tables."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--index", type=Path, required=True)
     parser.add_argument("--queries", type=Path, default=Path("eval/queries.jsonl"))
     parser.add_argument("--detail", default="ratio@0.85", help="scorer@threshold")
     parser.add_argument("--ablate", action="store_true")
+    parser.add_argument(
+        "--service", action="store_true", help="score POST /resolve of the app"
+    )
+    parser.add_argument(
+        "--wikidata", action="store_true", help="with --service: live fallback on"
+    )
+    parser.add_argument(
+        "--categories", nargs="+", help="only score queries in these categories"
+    )
+    parser.add_argument(
+        "--pause", type=float, default=0.0, help="with --service: seconds between"
+    )
     args = parser.parse_args()
 
     queries = load_queries(args.queries)
+    if args.categories:
+        queries = [q for q in queries if q["category"] in args.categories]
     print(f"{len(queries)} queries, index {args.index}")
+    if args.service:
+        answers, sources = service_answers(
+            args.index, queries, args.wikidata, args.pause
+        )
+        fallback = "on" if args.wikidata else "off"
+        print_detail(
+            f"POST /resolve, Wikidata fallback {fallback}", tally(queries, answers, 0.0)
+        )
+        print_misses(queries, answers, sources)
+        return
     base = Resolver(args.index)
 
     exact = exact_answers(base, queries)
