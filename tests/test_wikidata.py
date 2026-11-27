@@ -427,6 +427,28 @@ def test_generic_word_never_reaches_wikidata():
     assert calls == []
 
 
+def test_placeholder_cells_never_reach_wikidata():
+    # Wikidata's search finds an electrical substation for "N/A" (#85).
+    calls: list[str] = []
+
+    class Spy:
+        def lookup(self, name: str, language: str = "en"):
+            calls.append(name)
+
+    with TestClient(app) as client:
+        wait_ready(client)
+        app.state.wikidata = Spy()
+        try:
+            bodies = [
+                client.post("/resolve", json={"company_name": junk}).json()
+                for junk in ["N/A", "n/a", "#N/A", "n.a.", "NaN", "Null", "T.B.D."]
+            ]
+        finally:
+            app.state.wikidata = None
+    assert {b["status"] for b in bodies} == {"unresolved"}
+    assert calls == []
+
+
 def test_translated_name_goes_in_label_and_canonical_stays_english():
     claims = {"Q160120": {"P159": [statement("Q9")]}}
 

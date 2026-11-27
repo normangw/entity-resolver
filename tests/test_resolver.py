@@ -272,6 +272,15 @@ def test_variants_strip_vendor_numbers_cities_and_dba():
     assert variants("Apple Inc.") == ["Apple Inc."]
 
 
+def test_placeholders_are_generic_but_real_names_are_not():
+    from entity_resolver.resolver import is_generic
+
+    for junk in ["N/A", "#N/A", "n.a.", "NaN", "T.B.D.", "Unknown"]:
+        assert is_generic(junk), junk
+    for name in ["NAPA Auto Parts", "Nana", "NAN YA Plastics", "NBA"]:
+        assert not is_generic(name), name
+
+
 def test_split_companies_carry_a_review_note():
     from entity_resolver.resolver import note_for
 
