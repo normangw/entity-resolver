@@ -26,10 +26,12 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
-# Non-root user that owns the app directory and the upload directory. The upload
-# directory is a volume in compose.yml, so spreadsheet jobs survive a restart.
+# Non-root user that owns the app directory and the data directories. Both are
+# volumes in compose.yml. Docker copies a mount point's owner into a new, empty named
+# volume, so each must exist here, owned by app; otherwise the volume is root-owned
+# and scripts/load_index.sh cannot write the index (Permission denied).
 RUN useradd --create-home --uid 1000 app \
-    && mkdir -p /data/uploads \
+    && mkdir -p /data/uploads /data/index \
     && chown -R app:app /data
 ENV UPLOAD_DIR=/data/uploads
 WORKDIR /app
