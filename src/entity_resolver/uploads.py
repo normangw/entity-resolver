@@ -122,35 +122,50 @@ def load_job(job_dir: Path) -> Job | None:
 
     A job that was running when the process stopped comes back as an error with a
     message saying to resolve again; the answers it had finished are kept.
+
+    The format is expand/contract safe, so the version before and after a deploy
+    can read each other's job files during a rollback: unknown fields are ignored,
+    and missing ones get defaults. Only ``id`` and ``input`` are required. A summary
+    or cached answer that no longer validates is dropped (the job says to resolve
+    again) instead of losing the whole job.
     """
     try:
         meta = json.loads((job_dir / META_FILE).read_text(encoding="utf-8"))
         input_path = job_dir / Path(meta["input"]).name  # never leave job_dir
+        kind = meta.get("kind")
         job = Job(
             id=meta["id"],
             dir=job_dir,
-            filename=meta["filename"],
-            kind=meta["kind"],
+            filename=str(meta.get("filename") or "upload"),
+            kind=kind if kind in ("csv", "xlsx", "xls") else "csv",
             input_path=input_path,
-            created=float(meta["created"]),
-            state=meta["state"],
-            done=int(meta["done"]),
-            total=int(meta["total"]),
-            error=meta["error"],
+            created=float(meta.get("created") or 0.0),
+            state=str(meta.get("state") or "uploaded"),
+            done=int(meta.get("done") or 0),
+            total=int(meta.get("total") or 0),
+            error=meta.get("error"),
             owner=meta.get("owner"),
         )
         if meta["id"] != job_dir.name or not input_path.is_file():
             return None
-        if meta["summary"]:
-            job.summary = UploadSummary.model_validate(meta["summary"])
-        if meta["output"]:
+        summary_lost = False
+        if meta.get("summary"):
+            try:
+                job.summary = UploadSummary.model_validate(meta["summary"])
+            except ValueError:
+                summary_lost = True
+        if meta.get("output"):
             output = job_dir / Path(meta["output"]).name
             job.output = output if output.is_file() else None
         cache_path = job_dir / CACHE_FILE
         if cache_path.is_file():
             raw = json.loads(cache_path.read_text(encoding="utf-8"))
-            job.cache = {k: ResolveResponse.model_validate(v) for k, v in raw.items()}
-    except (OSError, ValueError, KeyError, TypeError):
+            for key, value in raw.items():
+                try:
+                    job.cache[key] = ResolveResponse.model_validate(value)
+                except ValueError:
+                    continue  # this answer is redone on the next run
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
     if job.state == "running":
         job.state = "error"
@@ -158,9 +173,12 @@ def load_job(job_dir: Path) -> Job | None:
             "The server restarted while this file was being resolved. "
             "Resolve it again; names that were already answered are kept."
         )
-    elif job.state == "done" and job.output is None:
+    elif job.state == "done" and (job.output is None or summary_lost):
         job.state = "error"
         job.error = "The result file is no longer available. Resolve it again."
+    elif job.state not in ("uploaded", "done", "error"):
+        job.state = "error"  # a state a newer version added
+        job.error = "This file was saved by another version. Resolve it again."
     return job
 
 

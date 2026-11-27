@@ -27,15 +27,17 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |---|---|---|
+| `ENVIRONMENT` | `development` | `production` refuses to start without an `API_KEY` of 16+ characters and `LOG_FORMAT=json`. Every bad value stops the app at startup with the setting's name, and so does an unknown key in `.env` |
 | `APP_NAME` | `Entity Resolver API` | Name of the service |
 | `DEBUG` | `false` | Enable debug mode |
 | `WIKIDATA_TIMEOUT` | `10` | Timeout in seconds for Wikidata requests |
 | `WIKIDATA_FALLBACK` | `true` | When a name is not in the local index, ask Wikidata (resolves subsidiaries such as YouTube or Beats Electronics). The test suite sets it to `false` (see `tests/conftest.py`) so CI stays offline. Set `false` to run fully offline |
 | `WIKIDATA_CACHE_TTL` | `3600` | Seconds to remember a Wikidata answer, including "not found" (0 turns it off). Failures are never cached |
+| `SCORER` | `ratio` | RapidFuzz scorer for the local index: `ratio`, `WRatio` or `token_set_ratio`. Swap it with a `.env` edit and a restart; re-check `MATCH_THRESHOLD` with `scripts/evaluate.py` |
 | `MATCH_THRESHOLD` | `0.9` | Minimum RapidFuzz score, as a fraction, to accept a match |
 | `MODEL_DELAY_SECONDS` | `0` | Seconds `Resolver.resolve` sleeps before scoring. Stands in for a slow model; leave at `0` in normal use |
 | `GLEIF_ENABLED` | `false` | Turn on the GLEIF tiebreak for low-confidence matches. When on, the service calls the public GLEIF API |
-| `GLEIF_LOW_THRESHOLD` | `0.6` | Lowest score a candidate may have to be sent to the tiebreak |
+| `GLEIF_LOW_THRESHOLD` | `0.6` | Lowest score a candidate may have to be sent to the tiebreak. With GLEIF on it must be below `MATCH_THRESHOLD` |
 | `GLEIF_DAILY_BUDGET` | `1000` | GLEIF requests allowed per day. GLEIF is free but shared, so this is a courtesy cap |
 | `GLEIF_TIMEOUT` | `5` | Seconds to wait for GLEIF before giving up |
 | `UPLOAD_DIR` | `<system temp>/entity-resolver-uploads` | Where uploaded spreadsheets and results are kept until they expire |
@@ -54,7 +56,10 @@ cp .env.example .env
 | `BATCH_BUDGET_SECONDS` | `60` | After this long a batch stops calling Wikidata and marks the rest `retry` |
 | `WIKIDATA_MAX_CONCURRENT` | `4` | Wikidata lookups in flight at once across all requests |
 | `WIKIDATA_QUEUE_SECONDS` | `5` | How long a request waits for a Wikidata slot before a `503` |
-| `WIKIDATA_RETRIES` | `2` | Extra attempts per Wikidata API call for timeouts and 5xx, with exponential backoff and jitter. HTTP 429 is never retried |
+| `WIKIDATA_RETRIES` | `2` | Extra attempts per Wikidata API call for timeouts and 5xx, with exponential backoff and jitter |
+| `WIKIDATA_API_URL` | `https://www.wikidata.org/w/api.php` | The MediaWiki API to ask (another Wikibase, or a mock for drills) |
+| `WIKIDATA_DEADLINE_SECONDS` | `15` | One whole lookup: no API call, retry or wait starts after this |
+| `WIKIDATA_MAX_RETRY_AFTER` | `2` | A Wikidata `429` with `Retry-After` up to this many seconds is waited out once per lookup; a longer one becomes our `503` with the same `Retry-After` |
 | `WIKIDATA_BREAKER_FAILURES` | `5` | Failed lookups in a row that open the circuit breaker |
 | `WIKIDATA_BREAKER_SECONDS` | `30` | How long the breaker stays open (lookups get an immediate `503`) before one probe is let through |
 | `LOG_FORMAT` | `json` | `json` (one object per line with a request id) or `text` |
@@ -265,7 +270,7 @@ Serve the web UI (HTML). See [Web UI](#web-ui). Not listed in `/docs`.
 |---|---|
 | `POST /upload` (multipart `file`) | Save and inspect a file. Returns `id`, `kind`, `sheets`, `max_rows`. `400` for a bad or refused file, `413` if too large |
 | `GET /upload/{id}/preview?sheet=&has_header=` | Column labels, first rows and a suggested name column |
-| `POST /upload/{id}/resolve` | Body `{"sheet", "has_header", "column", "region"}`. Starts the job (`202`). `400` for a bad choice, `409` if already running, `429` if too busy, `503` while the model loads |
+| `POST /upload/{id}/resolve` | Body `{"sheet", "has_header", "column", "region"}`. Starts the job (`202`). `400` for a bad choice, `409` if already running (also when two starts arrive at once), `429` if too busy, `503` while the model loads |
 | `GET /upload/{id}/status` | `state` (`uploaded`, `running`, `done`, `error`), progress, and the summary with the integrity checks when done |
 | `GET /upload/{id}/download` | The resolved file (`409` until done) |
 
@@ -400,7 +405,7 @@ Answers to questions raised during user testing (issues #42 to #92). [docs/teste
 
 **Caching.** `GET /` (the page, which changes with each deploy) is sent with `Cache-Control: no-cache`; every other response, including JSON answers, errors, upload status and downloads, with `no-store`, so no browser or shared cache keeps one user's answer. The page inlines its CSS and JavaScript, so there are no static files to cache for long. JSON bodies over `MAX_BODY_BYTES` get `413` before they are read in full. At most `WIKIDATA_MAX_CONCURRENT` Wikidata lookups run at once; others wait up to `WIKIDATA_QUEUE_SECONDS` and then get `503`, so one script cannot exhaust Wikimedia's patience for everyone. The GLEIF daily budget is unchanged.
 
-**Resilience.** Timeouts and 5xx from Wikidata are retried with backoff and jitter. HTTP 429 and bad replies are not retried (that would worsen throttling) and, as before, return `503` rather than `unresolved`. After `WIKIDATA_BREAKER_FAILURES` failed lookups in a row the circuit breaker opens: for `WIKIDATA_BREAKER_SECONDS` lookups get an immediate `503` and Wikidata is left alone, then one probe is let through. Local-index matches are never affected. On shutdown the app stops running upload jobs and saves where each stopped.
+**Resilience.** Timeouts and 5xx from Wikidata are retried with backoff and jitter. An HTTP 429 is waited out once per lookup when its `Retry-After` is `WIKIDATA_MAX_RETRY_AFTER` (2) seconds or less and the wait fits in the lookup's deadline; otherwise it, like a bad reply, returns `503` rather than `unresolved`, with Wikidata's `Retry-After` passed on. A lookup as a whole stops starting new calls after `WIKIDATA_DEADLINE_SECONDS`, and counts once toward the breaker however many calls it made. Every `503` carries `Retry-After`. All the time limits, and why each has its value, are in [docs/time-limits.md](docs/time-limits.md). After `WIKIDATA_BREAKER_FAILURES` failed lookups in a row the circuit breaker opens: for `WIKIDATA_BREAKER_SECONDS` lookups get an immediate `503` and Wikidata is left alone, then one probe is let through. Local-index matches are never affected. On shutdown the app stops running upload jobs and saves where each stopped.
 
 **Uploads survive a restart.** Each job writes `meta.json` and `cache.json` next to its files in `UPLOAD_DIR` (a named volume in `compose.yml`). After a restart, finished jobs can still be downloaded until `UPLOAD_TTL_SECONDS`, and a job that was running comes back as an error saying to resolve again. Resolving the same upload again reuses every answer except `retry` rows, so a second run only repeats the lookups Wikidata could not answer. `cache.json` holds the company names from the file, so it has the same lifetime and the same confidentiality as the upload itself.
 
