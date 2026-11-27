@@ -242,7 +242,7 @@ Set `HOST` to `localhost` on your machine, or to the instance's public IP.
 ```bash
 # Health check
 curl http://$HOST/health
-# {"status":"ok","version":"0.1.0"}
+# {"status":"ok","version":"0.2.0","build":"<commit>"}
 
 # Readiness check (503 {"status":"not ready"} until the alias index has loaded)
 curl -i http://$HOST/ready
@@ -356,7 +356,7 @@ curl http://localhost:8000/health
 ```
 
 ```json
-{"status": "ok", "version": "0.1.0", "build": "a1b2c3d"}
+{"status": "ok", "version": "0.2.0", "build": "a1b2c3d"}
 ```
 
 `version` comes from `pyproject.toml` and does not change between deployments. `build` is the `BUILD_ID` the image was built with (a commit hash, see [Operating the service](#operating-the-service)), so it tells you what is actually running. It is `unknown` if the image was built without one.
