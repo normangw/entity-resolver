@@ -91,6 +91,15 @@ jobs:
           --label org.opencontainers.image.version=${{ steps.meta.outputs.version }}
           -t "$IMAGE:${{ github.sha }}" .
 
+      # A fresh named volume takes its owner from the mount point, so the app user
+      # must be able to write both volume paths (scripts/load_index.sh writes the index).
+      - name: Check the app user can write the volume paths
+        run: >
+          docker run --rm -v smoke-index:/data/index -v smoke-uploads:/data/uploads
+          --entrypoint sh "$IMAGE:${{ github.sha }}"
+          -c 'touch /data/index/.w /data/uploads/.w'
+          && docker volume rm smoke-index smoke-uploads
+
       # Development profile with the bundled 5-company seed index and no network
       # lookups, so the answers are fixed and the check needs no secrets.
       - name: Start the image
