@@ -333,19 +333,17 @@ Success: `owner: 200`, and `404` for no cookie, the other owner and the made-up 
 
 | Step | Date | Result | Notes |
 |---|---|---|---|
-| A1 Fresh install | | | |
-| A2 Load index | | | |
-| A3 Deploy | | | |
-| A4 HTTPS | | | |
-| A5 Only 80/443 | | | |
-| B1 Backup off instance | | | |
-| B2 Restore | | | restore time: |
-| B3 Rollback | | | |
-| B4 Reboot | | | |
-| C1 Wikidata blocked | | | |
-| C2 429 | | | |
-| C3 413 | | | |
-| C4 /metrics outside | | | |
-| C5 Other browser's job | | | |
-
-<!-- TODO(#106): paste real output -->
+| A1 Fresh install | 2026-11-27 | Pass, after a fix | New instance with a 60 GB disk. Found the root-owned index volume bug (#126, `docs/postmortem-fresh-install.md`). Runbook section 1 |
+| A2 Load index | 2026-11-27 | Pass | `load_index.sh` from the off-instance archive, after #126. Runbook section 6 |
+| A3 Deploy | 2026-11-27 | Pass | `deploy.sh 0.2.0`, about 20 s, digest recorded in the deploy log. Runbook section 2 |
+| A4 HTTPS | 2026-11-27 | Pass | Let's Encrypt certificate obtained about 75 s after start; HTTP answers 308 to HTTPS. Runbook section 1 |
+| A5 Only 80/443 | 2026-11-27 | Pass for the app | Only the proxy publishes 80 and 443; Grafana is on 127.0.0.1. Exosphere's web shell (`guacamole-exo-guac`) also publishes 49528, which is not part of the app (runbook section 1) |
+| B1 Backup off instance | 2026-11-27 | Pass | `backup_index.py backup`, copied to a laptop with `scp`, `verify` shows 14,127 companies. Runbook section 5 |
+| B2 Restore | 2026-11-27 | Pass | From the laptop copy onto the new instance; `/ready` and known answers (Lyft, YouTube) back. Runbook section 6 |
+| B3 Rollback | 2026-11-27 | Pass | `deploy.sh --previous` and forward again, about 20 s each, four lines in the deploy log. Runbook section 3 |
+| B4 Reboot | 2026-11-27 | Pass | All four containers healthy after `sudo reboot` with nothing started by hand; known answers p50 134 ms. Runbook section 7 |
+| C1 Wikidata blocked | | Not run | Covered by tests (`tests/test_resilience.py`, `test_wikidata.py`): a 503 with `Retry-After`, local answers keep working |
+| C2 429 | 2026-11-28 | Pass | 150 `POST /resolve` from one address within seconds: 124 `200`, 26 `429`; the next call answered `429` with `retry-after: 1` and `{"detail":"Too many requests. Slow down and retry shortly."}`. The limit is per client address, so a test from a pool of changing addresses never trips it |
+| C3 413 | 2026-11-28 | Pass | A 17.5 MB CSV to `/upload`: `413` from Caddy with `content-type: application/json` and `{"detail":"This file is too big. The limit is 10 MB and 5,000 rows. Save it as CSV or split it."}`. An `.exe` gets `400` naming the accepted types |
+| C4 /metrics outside | 2026-11-28 | Pass | `https://$HOST/metrics` answers `404`; `POST /resolve/batch` without the key `401`; an `http://` request with `Host: 127.0.0.1` from outside `403` |
+| C5 Other browser's job | 2026-11-28 | Pass | Uploaded a CSV, resolved it and downloaded the result with the owner cookie; the same `/upload/{id}/status` without the cookie answers `404` |

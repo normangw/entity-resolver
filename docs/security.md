@@ -43,15 +43,16 @@ names, job ids, zip bombs, formula cells); this page is the summary.
 | Logs | No key, company name, cell or file name is logged; access lines carry the route template, not the URL. A test checks this. |
 | Metrics | Labels are route templates and fixed values only. |
 
-**gitleaks result** (CI run on `main` at `2181223`, 2026-11-25, gitleaks v8.30.1):
+**gitleaks result** (`gitleaks git . --redact` over a full clone of `main` at
+`22d18c4`, after the 0.2.0 release, 2026-11-28, gitleaks v8.30.1):
 
 ```
-81 commits scanned.
-scanned ~5495263 bytes (5.50 MB) in 18.4s
+135 commits scanned.
+scanned ~6109791 bytes (6.11 MB) in 2.15s
 no leaks found
 ```
 
-<!-- TODO(#106): re-run on the release commit and paste the output here -->
+CI runs the same scan over the whole history on every push and pull request.
 
 ## Pinning
 

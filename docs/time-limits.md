@@ -16,7 +16,11 @@ per call): `/resolve` from the local index p99 216 ms; `/resolve` through the
 Wikidata path p99 529 ms; a 24-name batch 3.0 s. Live Wikidata is slower and
 throttles: a lookup is 2 to 5 API calls, and each call took well under 2 s in the
 2026-11-25 evaluation runs from a laptop.
-<!-- TODO(#106): replace with p50/p99 measured on Jetstream (scripts/loadtest.py and monitor.py output). -->
+
+On Jetstream (release 0.2.0, over HTTPS through Caddy), the known-answer check
+after the 2026-11-27 reboot drill (`scripts/monitor.py --smoke eval/smoke.jsonl`,
+runbook section 7) answered 17 queries with p50 134 ms and p95 226 ms, well inside
+the limits below.
 
 ## The table
 
